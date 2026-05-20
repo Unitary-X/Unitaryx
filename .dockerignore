@@ -1,15 +1,60 @@
+# Version Control
 .git
 .gitignore
-.vscode
+.gitattributes
+.github/
+.gitlab-ci.yml
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
+
+# Python Cache & Build Files
 __pycache__/
 */__pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Database & Logs
 *.db
+*.log
+logs/
 instance/
-freelancer/instance/
-backup/
-*.zip
+*.sqlite
+*.sqlite3
+
+# Environment & Secrets
 .env
 .env.*
+!.env.example
+
+# Project Specific
+backup/
+tmp/
+*.zip
+*.tar.gz
+*.tar
+node_modules/
+.npm/
+
+# Testing & Coverage
+.pytest_cache/
+htmlcov/
+.coverage
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+docs/

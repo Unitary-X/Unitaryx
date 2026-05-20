@@ -1,81 +1,218 @@
 version: "3.8"
 
+# Production-ready Docker Stack for Portainer Deployment (GitOps compatible)
+# Deploy: Stack > Add Stack > Use repository or paste compose > Set environment variables
+
 services:
+  # ════════════════════════════════════════════════════════════════════════════════
+  # PostgreSQL Database Service (Alpine for lightweight production)
+  # ════════════════════════════════════════════════════════════════════════════════
   db:
     image: postgres:16-alpine
-    container_name: unitaryx-db
+    container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-db
     restart: unless-stopped
+    
+    # Security: Don't expose database port outside the internal network in production
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    
     environment:
+      # Core PostgreSQL configuration
       POSTGRES_DB: ${POSTGRES_DB:-unitaryx}
       POSTGRES_USER: ${POSTGRES_USER:-unitaryx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeThisDbPassword!}
+      POSTGRES_INITDB_ARGS: ${POSTGRES_INITDB_ARGS:--c shared_buffers=256MB -c effective_cache_size=1GB}
+      
+      # Timezone and locale
       TZ: ${TZ:-Asia/Kolkata}
-    ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      PGTZ: ${TZ:-Asia/Kolkata}
+    
+    # Health check: Ensures DB is ready before app starts
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-unitaryx} -d ${POSTGRES_DB:-unitaryx}"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 20s
+    
+    # Persistent volume: Database data survives container restarts
     volumes:
-      - ${DATA_ROOT:-/mnt/Hdd/Hari/Projects/UnitaryX}/unitaryx-db:/var/lib/postgresql/data
+      - db_data:/var/lib/postgresql/data
+      # Optional: mount backup scripts
+      - ./scripts:/scripts:ro
+    
+    # Resource limits (adjust based on your infrastructure)
+    deploy:
+      resources:
+        limits:
+          cpus: "${DB_CPU_LIMIT:-1}"
+          memory: ${DB_MEMORY_LIMIT:-512M}
+        reservations:
+          cpus: "${DB_CPU_RESERVE:-0.5}"
+          memory: ${DB_MEMORY_RESERVE:-256M}
+    
+    # Logging configuration (prevent excessive logs)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
     networks:
       - unitaryx_net
 
+  # ════════════════════════════════════════════════════════════════════════════════
+  # Flask Application Service (Production with Gunicorn)
+  # ════════════════════════════════════════════════════════════════════════════════
   app:
+    # Build from local Dockerfile or pull pre-built image
     build:
       context: .
       dockerfile: Dockerfile
-    image: unitaryx-app:latest
-    container_name: unitaryx-app
+      args:
+        - PYTHON_VERSION=3.12
+    
+    image: ${REGISTRY:-unitaryx}:${APP_VERSION:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-app
     restart: unless-stopped
+    
+    # Ensure database is healthy before starting app
     depends_on:
       db:
         condition: service_healthy
+    
+    # Environment variables for application configuration
     environment:
+      # Application Settings
       TZ: ${TZ:-Asia/Kolkata}
       DEBUG: ${DEBUG:-False}
+      
+      # Security: MUST be set in production via secrets/environment
       SECRET_KEY: ${SECRET_KEY:-change_this_to_a_long_random_secret}
+      
+      # Admin/Super Admin Credentials (MUST be changed on first deployment)
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@unitaryx.com}
       ADMIN_PASS: ${ADMIN_PASS:-ChangeMeNow123!}
       SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-harikavi1301@gmail.com}
       SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-ChangeMeNow123!}
       SUPERADMIN_NAME: ${SUPERADMIN_NAME:-Super Admin}
+      
+      # Application Port
+      APP_PORT: ${APP_PORT:-10003}
       PORT: ${APP_PORT:-10003}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-unitaryx}:${POSTGRES_PASSWORD:-ChangeThisDbPassword!}@${DB_HOST:-db}:${DB_PORT:-5432}/${POSTGRES_DB:-unitaryx}}
+      
+      # Database Connection (built automatically from components in app.py)
+      POSTGRES_USER: ${POSTGRES_USER:-unitaryx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeThisDbPassword!}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-unitaryx}
+      DATABASE_URL: ${DATABASE_URL:-}
+      
+      # OAuth/Social Login (Optional)
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GOOGLE_ALLOWED_ORIGINS: ${GOOGLE_ALLOWED_ORIGINS:-https://unitaryx.org,http://localhost:10003,http://127.0.0.1:10003}
+      GOOGLE_ALLOWED_ORIGINS: ${GOOGLE_ALLOWED_ORIGINS:-https://unitaryx.org}
+      
+      # Email/SMTP Configuration
       SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-True}
-      GUNICORN_CMD_ARGS: --bind 0.0.0.0:${APP_PORT:-10003} --workers ${GUNICORN_WORKERS:-2} --threads ${GUNICORN_THREADS:-4} --timeout ${GUNICORN_TIMEOUT:-120}
+      
+      # Gunicorn Worker Configuration (tune based on server resources)
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
+      GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
+      GUNICORN_BIND: 0.0.0.0:${APP_PORT:-10003}
+    
+    # Port exposure: Maps container port to host
     ports:
       - "${APP_PORT:-10003}:${APP_PORT:-10003}"
+    
+    # Health check: Ensures app is responsive before marking as healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import os,sys,urllib.request; p=os.getenv('APP_PORT', os.getenv('PORT','10003')); urllib.request.urlopen(f'http://127.0.0.1:{p}/login', timeout=5); sys.exit(0)\""]
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:${APP_PORT:-10003}/login || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 40s
+    
+    # Persistent volumes for application data
     volumes:
-      - ${DATA_ROOT:-/mnt/Hdd/Hari/Projects/UnitaryX}/unitaryx-app:/app/data
+      # Application data directory
+      - app_data:/app/data
+      # Optional: backup directory
+      - app_backups:/app/instance/db_backups
+    
+    # Resource limits (adjust based on your infrastructure)
+    deploy:
+      resources:
+        limits:
+          cpus: "${APP_CPU_LIMIT:-2}"
+          memory: ${APP_MEMORY_LIMIT:-1G}
+        reservations:
+          cpus: "${APP_CPU_RESERVE:-1}"
+          memory: ${APP_MEMORY_RESERVE:-512M}
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Extra hosts for Docker Desktop compatibility
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    
+    # Traefik labels for reverse proxy (optional, disable if not using Traefik)
     labels:
       - "traefik.enable=${TRAEFIK_ENABLE:-false}"
       - "traefik.http.routers.unitaryx.rule=Host(`${TRAEFIK_HOST:-unitaryx.example.com}`)"
       - "traefik.http.routers.unitaryx.entrypoints=websecure"
-      - "traefik.http.routers.unitaryx.tls=true"
+      - "traefik.http.routers.unitaryx.tls.certresolver=letsencrypt"
       - "traefik.http.services.unitaryx.loadbalancer.server.port=${APP_PORT:-10003}"
+    
     networks:
       - unitaryx_net
 
+# ════════════════════════════════════════════════════════════════════════════════
+# Named Volumes (Persistent Data)
+# ════════════════════════════════════════════════════════════════════════════════
+volumes:
+  # PostgreSQL database directory
+  db_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DB_VOLUME_PATH:-/portainer_volumes/unitaryx/db}
+  
+  # Application data directory
+  app_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${APP_VOLUME_PATH:-/portainer_volumes/unitaryx/app}
+  
+  # Application backups directory
+  app_backups:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${APP_BACKUP_PATH:-/portainer_volumes/unitaryx/backups}
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Docker Network (Internal service discovery)
+# ════════════════════════════════════════════════════════════════════════════════
 networks:
   unitaryx_net:
-    name: unitaryx_net
+    name: ${COMPOSE_PROJECT_NAME:-unitaryx}-net
     driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-${COMPOSE_PROJECT_NAME:-unitaryx}

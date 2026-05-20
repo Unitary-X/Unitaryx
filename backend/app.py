@@ -278,7 +278,19 @@ def add_no_cache_headers(response):
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL", f"sqlite:///{os.path.join(basedir, 'unitaryx_v2.db')}")
+
+# Build DATABASE_URL from individual components if not explicitly set
+_database_url = os.getenv("DATABASE_URL", "").strip()
+if not _database_url:
+    _db_user = os.getenv("POSTGRES_USER", "unitaryx")
+    _db_pass = os.getenv("POSTGRES_PASSWORD", "ChangeThisDbPassword!")
+    _db_host = os.getenv("DB_HOST", "db")
+    _db_port = os.getenv("DB_PORT", "5432")
+    _db_name = os.getenv("POSTGRES_DB", "unitaryx")
+    # Use psycopg (psycopg3) driver for PostgreSQL
+    _database_url = f"postgresql+psycopg://{_db_user}:{_db_pass}@{_db_host}:{_db_port}/{_db_name}"
+
+app.config['SQLALCHEMY_DATABASE_URI'] = _database_url or f"sqlite:///{os.path.join(basedir, 'unitaryx_v2.db')}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db_uri = (app.config['SQLALCHEMY_DATABASE_URI'] or "").lower()
 if db_uri.startswith("sqlite"):
