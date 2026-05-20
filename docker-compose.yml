@@ -186,14 +186,26 @@ volumes:
   # PostgreSQL database directory
   db_data:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DB_VOLUME_PATH}
   
   # Application data directory
   app_data:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${APP_VOLUME_PATH}
   
   # Application backups directory
   app_backups:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${APP_BACKUP_PATH}
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Docker Network (Internal service discovery)
