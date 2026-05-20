@@ -37,7 +37,7 @@ services:
     
     # Persistent volume: Database data survives container restarts
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - ${DB_VOLUME_PATH}:/var/lib/postgresql/data
       # Optional: mount backup scripts
       - ./scripts:/scripts:ro
     
@@ -143,9 +143,9 @@ services:
     # Persistent volumes for application data
     volumes:
       # Application data directory
-      - app_data:/app/data
+      - ${APP_VOLUME_PATH}:/app/data
       # Optional: backup directory
-      - app_backups:/app/instance/db_backups
+      - ${APP_BACKUP_PATH}:/app/instance/db_backups
     
     # Resource limits (adjust based on your infrastructure)
     deploy:
@@ -178,25 +178,6 @@ services:
     
     networks:
       - unitaryx_net
-
-# ════════════════════════════════════════════════════════════════════════════════
-# Named Volumes (Persistent Data)
-# ════════════════════════════════════════════════════════════════════════════════
-volumes:
-  # PostgreSQL database directory
-  db_data:
-    name: ${COMPOSE_PROJECT_NAME:-unitaryx}_db_data_local
-    driver: local
-  
-  # Application data directory
-  app_data:
-    name: ${COMPOSE_PROJECT_NAME:-unitaryx}_app_data_local
-    driver: local
-  
-  # Application backups directory
-  app_backups:
-    name: ${COMPOSE_PROJECT_NAME:-unitaryx}_app_backups_local
-    driver: local
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Docker Network (Internal service discovery)
