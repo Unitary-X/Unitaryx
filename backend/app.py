@@ -12,6 +12,7 @@ from functools import wraps
 import os, re, urllib.parse, random, smtplib, ssl, csv, json, hashlib
 from io import StringIO
 from email.message import EmailMessage
+from .mailers import send_welcome_email as queue_welcome_email, send_assigned_email as queue_assigned_email
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
@@ -1366,6 +1367,38 @@ def _smtp_send_message(msg):
         server.send_message(msg)
 
 
+def _send_welcome_email(email, name):
+    """Send a welcoming email to a newly registered customer."""
+    smtp_user = (os.getenv("SMTP_USER") or "").strip()
+    smtp_from = (os.getenv("SMTP_FROM") or smtp_user).strip()
+    if not smtp_from:
+        raise RuntimeError("SMTP_FROM or SMTP_USER must be configured")
+    queue_welcome_email(
+        recipient=email,
+        name=name,
+        sender=smtp_from,
+        locale=os.getenv("MAIL_LOCALE", "en"),
+        app_url=os.getenv("APP_URL", ""),
+    )
+
+
+def _send_task_assigned_email(email, title, details, assigned_by):
+    """Notify an admin that a task was assigned to them."""
+    smtp_user = (os.getenv("SMTP_USER") or "").strip()
+    smtp_from = (os.getenv("SMTP_FROM") or smtp_user).strip()
+    if not smtp_from:
+        raise RuntimeError("SMTP_FROM or SMTP_USER must be configured")
+    queue_assigned_email(
+        recipient=email,
+        title=title,
+        details=details,
+        assigned_by=assigned_by,
+        sender=smtp_from,
+        locale=os.getenv("MAIL_LOCALE", "en"),
+        app_url=os.getenv("APP_URL", ""),
+    )
+
+
 def _otp_matches(stored_otp_value, otp_code):
     """Verify OTP against hashed storage with compatibility for legacy plain-text rows."""
     try:
@@ -1709,6 +1742,10 @@ def register():
             user.set_password(password)
             db.session.add(user)
             db.session.commit()
+            try:
+                _send_welcome_email(email, name)
+            except Exception:
+                app.logger.exception("Failed to send welcome email")
             session['user_id']   = user.id
             session['user_name'] = user.name
             session['role']      = user.role
@@ -3257,6 +3294,10 @@ def assign_admin_task():
         actor=creator,
     )
     db.session.commit()
+    try:
+        _send_task_assigned_email(assigned_to_email, title, details, (creator.email or "").strip().lower())
+    except Exception:
+        app.logger.exception("Failed to send task assignment email")
 
     flash(f"Task assigned to {assigned_to_email}.", "success")
     return redirect(url_for("admin_panel"))
@@ -3356,6 +3397,12 @@ def assign_admin_task_bulk():
         actor=creator,
     )
     db.session.commit()
+    # Notify each assigned admin by email (best-effort)
+    for email in valid_targets:
+        try:
+            _send_task_assigned_email(email, title, details, (creator.email or "").strip().lower())
+        except Exception:
+            app.logger.exception("Failed to send bulk task assignment email to %s", email)
 
     if skipped:
         flash(f"Assigned to {len(valid_targets)} admins. Skipped {len(skipped)} invalid/inactive emails.", "warning")

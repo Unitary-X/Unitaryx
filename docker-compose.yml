@@ -61,6 +61,48 @@ services:
     networks:
       - unitaryx_net
 
+  # Redis broker for Celery
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - unitaryx_net
+
+  # Celery worker for background tasks (email sending)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - PYTHON_VERSION=3.12
+    image: ${REGISTRY:-unitaryx}:${APP_VERSION:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-worker
+    command: celery -A backend.email_tasks worker --loglevel=info --concurrency=1
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - db
+    environment:
+      # Celery broker/backends
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      # SMTP settings (worker needs to send email)
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-True}
+      - SMTP_USE_SSL=${SMTP_USE_SSL:-False}
+      - APP_URL=${APP_URL:-}
+    networks:
+      - unitaryx_net
+
   # ════════════════════════════════════════════════════════════════════════════════
   # Flask Application Service (Production with Gunicorn)
   # ════════════════════════════════════════════════════════════════════════════════
@@ -188,3 +230,7 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.name: br-${COMPOSE_PROJECT_NAME:-unitaryx}
+
+volumes:
+  redis_data:
+    driver: local

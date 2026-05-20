@@ -1,0 +1,132 @@
+"""Standalone email builders and async delivery helpers.
+
+This module keeps mail composition testable without importing the full Flask app.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "emails"
+
+TRANSLATIONS: Dict[str, Dict[str, str]] = {
+    "en": {
+        "welcome_subject": "Welcome to Unitary X",
+        "welcome_greeting": "Hello {name},",
+        "welcome_intro": "Welcome to Unitary X! We're glad you're here.",
+        "welcome_body": "You can sign in using your email and password.",
+        "assigned_subject": "New admin task assigned: {title}",
+        "assigned_greeting": "Hello,",
+        "assigned_intro": "You have been assigned a new admin task by {assigned_by}.",
+        "assigned_body": "Please review the task details below.",
+        "assigned_cta": "Open the admin panel",
+    },
+    "hi": {
+        "welcome_subject": "Unitary X में आपका स्वागत है",
+        "welcome_greeting": "नमस्ते {name},",
+        "welcome_intro": "Unitary X में आपका स्वागत है! हमें खुशी है कि आप जुड़े हैं।",
+        "welcome_body": "आप अपने ईमेल और पासवर्ड से साइन इन कर सकते हैं।",
+        "assigned_subject": "नया एडमिन कार्य सौंपा गया: {title}",
+        "assigned_greeting": "नमस्ते,",
+        "assigned_intro": "आपको {assigned_by} द्वारा एक नया एडमिन कार्य सौंपा गया है।",
+        "assigned_body": "कृपया नीचे दिए गए कार्य विवरण देखें।",
+        "assigned_cta": "एडमिन पैनल खोलें",
+    },
+}
+
+
+def _locale_key(locale: str | None) -> str:
+    normalized = (locale or "en").strip().lower().replace("_", "-")
+    short = normalized.split("-")[0]
+    return short if short in TRANSLATIONS else "en"
+
+
+def _copy(locale: str | None) -> Dict[str, str]:
+    return TRANSLATIONS[_locale_key(locale)]
+
+
+def _render_template(template_name: str, context: Dict[str, Any]) -> str:
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
+    return env.get_template(template_name).render(**context)
+
+
+def build_welcome_payload(name: str, locale: str | None = None, app_url: str | None = None) -> Tuple[str, str, str]:
+    text = _copy(locale)
+    subject = text["welcome_subject"]
+    context = {
+        "name": name,
+        "greeting": text["welcome_greeting"].format(name=name),
+        "intro": text["welcome_intro"],
+        "body": text["welcome_body"],
+        "app_url": app_url or os.getenv("APP_URL", ""),
+        "cta": text["assigned_cta"],
+    }
+    plain = _render_template("welcome.txt", context)
+    html = _render_template("welcome.html", context)
+    return subject, plain, html
+
+
+def build_assigned_payload(
+    title: str,
+    details: str,
+    assigned_by: str,
+    locale: str | None = None,
+    app_url: str | None = None,
+) -> Tuple[str, str, str]:
+    text = _copy(locale)
+    subject = text["assigned_subject"].format(title=title)
+    context = {
+        "title": title,
+        "details": details,
+        "assigned_by": assigned_by,
+        "greeting": text["assigned_greeting"],
+        "intro": text["assigned_intro"].format(assigned_by=assigned_by),
+        "body": text["assigned_body"],
+        "app_url": app_url or os.getenv("APP_URL", ""),
+        "cta": text["assigned_cta"],
+    }
+    plain = _render_template("assigned.txt", context)
+    html = _render_template("assigned.html", context)
+    return subject, plain, html
+
+
+def _deliver(subject: str, sender: str, recipient: str, plain: str, html: str | None = None) -> None:
+    from .email_tasks import send_email
+
+    # send_email is a Celery task when broker is configured; otherwise a sync function.
+    enqueue = getattr(send_email, "delay", None)
+    if callable(enqueue):
+        enqueue(subject, sender, recipient, plain, html)
+    else:
+        send_email(subject, sender, recipient, plain, html)
+
+
+def send_welcome_email(recipient: str, name: str, sender: str, locale: str | None = None, app_url: str | None = None) -> None:
+    subject, plain, html = build_welcome_payload(name=name, locale=locale, app_url=app_url)
+    _deliver(subject, sender, recipient, plain, html)
+
+
+def send_assigned_email(
+    recipient: str,
+    title: str,
+    details: str,
+    assigned_by: str,
+    sender: str,
+    locale: str | None = None,
+    app_url: str | None = None,
+) -> None:
+    subject, plain, html = build_assigned_payload(
+        title=title,
+        details=details,
+        assigned_by=assigned_by,
+        locale=locale,
+        app_url=app_url,
+    )
+    _deliver(subject, sender, recipient, plain, html)
