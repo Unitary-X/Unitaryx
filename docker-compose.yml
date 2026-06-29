@@ -63,7 +63,8 @@ services:
   worker:
     image: ${REGISTRY:-ghcr.io/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME}:${APP_VERSION:-latest}
     container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-worker
-    command: celery -A backend.email_tasks worker --loglevel=info --concurrency=1
+    user: "1000:1000"
+    command: celery -A backend.email_tasks worker --uid=1000 --loglevel=info --concurrency=1
     restart: unless-stopped
     depends_on:
       redis:
@@ -75,6 +76,7 @@ services:
     environment:
       - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      - CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP=True
       # Passthrough all other DB and SMTP env vars here if needed.
     networks:
       - unitaryx_net
@@ -85,6 +87,7 @@ services:
   app:
     image: ${REGISTRY:-ghcr.io/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME}:${APP_VERSION:-latest}
     container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-app
+    user: "1000:1000"
     restart: unless-stopped
     
     depends_on:
