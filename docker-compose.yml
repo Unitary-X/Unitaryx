@@ -1,33 +1,30 @@
 version: "3.8"
 
-# Production-ready Docker Stack for Portainer Deployment (GitOps compatible)
-# Deploy: Stack > Add Stack > Use repository or paste compose > Set environment variables
+# Production-ready GitOps Stack for Portainer
+# Deployment Method: Portainer GitOps (Repository mode)
 
 services:
   # ════════════════════════════════════════════════════════════════════════════════
-  # PostgreSQL Database Service (Alpine for lightweight production)
+  # PostgreSQL Database Service
   # ════════════════════════════════════════════════════════════════════════════════
   db:
     image: postgres:16-alpine
     container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-db
     restart: unless-stopped
     
-    # Security: Don't expose database port outside the internal network in production
-    ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+    # Do not expose the DB to the host network in production for security.
+    # If external access is required via Cloudflare Tunnel, it should route through the internal network.
+    # ports:
+    #   - "${POSTGRES_PORT:-5433}:5432"
     
     environment:
-      # Core PostgreSQL configuration
       POSTGRES_DB: ${POSTGRES_DB:-unitaryx}
       POSTGRES_USER: ${POSTGRES_USER:-unitaryx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeThisDbPassword!}
       POSTGRES_INITDB_ARGS: ${POSTGRES_INITDB_ARGS:--c shared_buffers=256MB -c effective_cache_size=1GB}
-      
-      # Timezone and locale
       TZ: ${TZ:-Asia/Kolkata}
       PGTZ: ${TZ:-Asia/Kolkata}
     
-    # Health check: Ensures DB is ready before app starts
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-unitaryx} -d ${POSTGRES_DB:-unitaryx}"]
       interval: 10s
@@ -35,23 +32,10 @@ services:
       retries: 10
       start_period: 20s
     
-    # Persistent volume: Database data survives container restarts
+    # Preserve persistent volumes so data is not wiped on deployment
     volumes:
-      - ${DB_VOLUME_PATH}:/var/lib/postgresql/data
-      # Optional: mount backup scripts
-      - ./scripts:/scripts:ro
+      - db_data:/var/lib/postgresql/data
     
-    # Resource limits (adjust based on your infrastructure)
-    deploy:
-      resources:
-        limits:
-          cpus: "${DB_CPU_LIMIT:-1}"
-          memory: ${DB_MEMORY_LIMIT:-512M}
-        reservations:
-          cpus: "${DB_CPU_RESERVE:-0.5}"
-          memory: ${DB_MEMORY_RESERVE:-256M}
-    
-    # Logging configuration (prevent excessive logs)
     logging:
       driver: "json-file"
       options:
@@ -61,178 +45,118 @@ services:
     networks:
       - unitaryx_net
 
-  # Redis broker for Celery
+  # ════════════════════════════════════════════════════════════════════════════════
+  # Redis Service
+  # ════════════════════════════════════════════════════════════════════════════════
   redis:
     image: redis:7-alpine
     container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-redis
     restart: unless-stopped
-    # Do not publish Redis to the host in production — keep internal only
-    # Remove or comment out `ports` to avoid binding host port 6379 which can
-    # conflict with other services. If you need host access, map to a different
-    # host port using an environment variable, e.g. "${REDIS_HOST_PORT:-6379}:6379".
     volumes:
       - redis_data:/data
     networks:
       - unitaryx_net
 
-  # Celery worker for background tasks (email sending)
+  # ════════════════════════════════════════════════════════════════════════════════
+  # Celery Worker
+  # ════════════════════════════════════════════════════════════════════════════════
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        - PYTHON_VERSION=3.12
-    image: ${REGISTRY:-unitaryx}:${APP_VERSION:-latest}
+    image: ${REGISTRY:-ghcr.io/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME}:${APP_VERSION:-latest}
     container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-worker
     command: celery -A backend.email_tasks worker --loglevel=info --concurrency=1
     restart: unless-stopped
     depends_on:
-      - redis
-      - db
+      redis:
+        condition: service_started
+      db:
+        condition: service_healthy
+    env_file:
+      - .env.production # Optional: Portainer supports env files if they exist in repo, but it's better to use Portainer Env Vars.
     environment:
-      # Celery broker/backends
       - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
-      # SMTP settings (worker needs to send email)
-      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
-      - SMTP_PORT=${SMTP_PORT:-587}
-      - SMTP_USER=${SMTP_USER:-}
-      - SMTP_PASS=${SMTP_PASS:-}
-      - SMTP_FROM=${SMTP_FROM:-}
-      - SMTP_USE_TLS=${SMTP_USE_TLS:-True}
-      - SMTP_USE_SSL=${SMTP_USE_SSL:-False}
-      - APP_URL=${APP_URL:-}
+      # Passthrough all other DB and SMTP env vars here if needed.
     networks:
       - unitaryx_net
 
   # ════════════════════════════════════════════════════════════════════════════════
-  # Flask Application Service (Production with Gunicorn)
+  # Flask Application
   # ════════════════════════════════════════════════════════════════════════════════
   app:
-    # Build from local Dockerfile or pull pre-built image
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        - PYTHON_VERSION=3.12
-    
-    image: ${REGISTRY:-unitaryx}:${APP_VERSION:-latest}
+    image: ${REGISTRY:-ghcr.io/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME}:${APP_VERSION:-latest}
     container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-app
     restart: unless-stopped
     
-    # Ensure database is healthy before starting app
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     
-    # Environment variables for application configuration
+    # Let Portainer inject environment variables safely
     environment:
-      # Application Settings
       TZ: ${TZ:-Asia/Kolkata}
       DEBUG: ${DEBUG:-False}
-      
-      # Security: MUST be set in production via secrets/environment
-      SECRET_KEY: ${SECRET_KEY:-change_this_to_a_long_random_secret}
-      
-      # Admin/Super Admin Credentials (MUST be changed on first deployment)
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@unitaryx.com}
-      ADMIN_PASS: ${ADMIN_PASS:-ChangeMeNow123!}
-      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-harikavi1301@gmail.com}
-      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-ChangeMeNow123!}
-      SUPERADMIN_NAME: ${SUPERADMIN_NAME:-Super Admin}
-      
-      # Application Port
+      SECRET_KEY: ${SECRET_KEY}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASS: ${ADMIN_PASS}
+      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD}
+      SUPERADMIN_NAME: ${SUPERADMIN_NAME}
       APP_PORT: ${APP_PORT:-10003}
       PORT: ${APP_PORT:-10003}
       
-      # Database Connection (built automatically from components in app.py)
       POSTGRES_USER: ${POSTGRES_USER:-unitaryx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeThisDbPassword!}
       DB_HOST: ${DB_HOST:-db}
       DB_PORT: ${DB_PORT:-5432}
       POSTGRES_DB: ${POSTGRES_DB:-unitaryx}
-      DATABASE_URL: ${DATABASE_URL:-}
       
-      # OAuth/Social Login (Optional)
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GOOGLE_ALLOWED_ORIGINS: ${GOOGLE_ALLOWED_ORIGINS:-https://unitaryx.org}
-      
-      # Email/SMTP Configuration
-      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_FROM: ${SMTP_FROM}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-True}
       
-      # Gunicorn Worker Configuration (tune based on server resources)
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
       GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
       GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
-      GUNICORN_BIND: 0.0.0.0:${APP_PORT:-10003}
     
-    # Port exposure: Maps container port to host
+    # Reverse proxy mapping
     ports:
-      - "${APP_PORT:-10003}:${APP_PORT:-10003}"
+      - "${APP_PORT:-10003}:10003"
     
-    # Health check: Ensures app is responsive before marking as healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://127.0.0.1:${APP_PORT:-10003}/login || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:10003/login || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 40s
     
-    # Persistent volumes for application data
     volumes:
-      # Application data directory
-      - ${APP_VOLUME_PATH}:/app/data
-      # Optional: backup directory
-      - ${APP_BACKUP_PATH}:/app/instance/db_backups
+      - app_data:/app/data
+      - backup_data:/app/instance/db_backups
     
-    # Resource limits (adjust based on your infrastructure)
-    deploy:
-      resources:
-        limits:
-          cpus: "${APP_CPU_LIMIT:-2}"
-          memory: ${APP_MEMORY_LIMIT:-1G}
-        reservations:
-          cpus: "${APP_CPU_RESERVE:-1}"
-          memory: ${APP_MEMORY_RESERVE:-512M}
-    
-    # Logging configuration
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
     
-    # Extra hosts for Docker Desktop compatibility
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    
-    # Traefik labels for reverse proxy (optional, disable if not using Traefik)
-    labels:
-      - "traefik.enable=${TRAEFIK_ENABLE:-false}"
-      - "traefik.http.routers.unitaryx.rule=Host(`${TRAEFIK_HOST:-unitaryx.example.com}`)"
-      - "traefik.http.routers.unitaryx.entrypoints=websecure"
-      - "traefik.http.routers.unitaryx.tls.certresolver=letsencrypt"
-      - "traefik.http.services.unitaryx.loadbalancer.server.port=${APP_PORT:-10003}"
-    
     networks:
       - unitaryx_net
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Docker Network (Internal service discovery)
+# Docker Networks & Volumes
 # ════════════════════════════════════════════════════════════════════════════════
 networks:
   unitaryx_net:
     name: ${COMPOSE_PROJECT_NAME:-unitaryx}-net
     driver: bridge
-    driver_opts:
-      com.docker.network.bridge.name: br-${COMPOSE_PROJECT_NAME:-unitaryx}
 
 volumes:
+  db_data:
   redis_data:
-    driver: local
+  app_data:
+  backup_data:

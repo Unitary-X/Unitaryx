@@ -1,3 +1,8 @@
+# Environment files - NEVER commit secrets
+.env
+.env.*
+!.env.example
+
 # Version Control
 .git
 .gitignore
@@ -32,11 +37,6 @@ instance/
 *.sqlite
 *.sqlite3
 
-# Environment & Secrets
-.env
-.env.*
-!.env.example
-
 # Project Specific
 backup/
 tmp/
@@ -52,9 +52,10 @@ htmlcov/
 .coverage
 
 # OS Files
-.DS_Store
 Thumbs.db
 
 # Documentation
 *.md
+!README.md
+!README_DEPLOYMENT.md
 docs/
