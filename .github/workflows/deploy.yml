@@ -84,31 +84,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true
-
-  deploy:
-    name: Deploy via GitOps
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    # Only run deploy on main branch, not for PRs
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Trigger Portainer Webhook
-        run: |
-          echo "Triggering Portainer GitOps Webhook..."
-          curl -f -X POST "${{ secrets.PORTAINER_WEBHOOK_URL }}" || (echo "Deployment failed" && exit 1)
-          echo "Deployment triggered successfully"
-
-  verify-health:
-    name: Verify Health
-    needs: deploy
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Wait for services to spin up
-        run: sleep 45
-
-      - name: Check Health Endpoint
-        run: |
-          # The domain should be defined in GitHub secrets if you want to ping it
-          # E.g. https://unitaryx.org/login
-          curl -f -I "${{ secrets.PROD_URL }}/login" || echo "Health check failed."
