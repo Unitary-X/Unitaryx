@@ -34,7 +34,7 @@ services:
     
     # Preserve persistent volumes so data is not wiped on deployment
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - ${DB_VOLUME_PATH:-./data/db}:/var/lib/postgresql/data
     
     logging:
       driver: "json-file"
@@ -53,7 +53,7 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-unitaryx}-redis
     restart: unless-stopped
     volumes:
-      - redis_data:/data
+      - ${REDIS_VOLUME_PATH:-./data/redis}:/data
     networks:
       - unitaryx_net
 
@@ -138,8 +138,8 @@ services:
       start_period: 40s
     
     volumes:
-      - app_data:/app/data
-      - backup_data:/app/instance/db_backups
+      - ${APP_VOLUME_PATH:-./data/app}:/app/data
+      - ${APP_BACKUP_PATH:-./data/backups}:/app/instance/db_backups
     
     logging:
       driver: "json-file"
@@ -158,8 +158,4 @@ networks:
     name: ${COMPOSE_PROJECT_NAME:-unitaryx}-net
     driver: bridge
 
-volumes:
-  db_data:
-  redis_data:
-  app_data:
-  backup_data:
+# Named volumes removed in favor of environment-routed bind mounts.
