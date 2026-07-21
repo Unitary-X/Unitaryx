@@ -19,6 +19,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "welcome_greeting": "Hello {name},",
         "welcome_intro": "Welcome to Unitary X! We're glad you're here.",
         "welcome_body": "You can sign in using your email and password.",
+        "welcome_cta": "Go to your dashboard",
         "assigned_subject": "New admin task assigned: {title}",
         "assigned_greeting": "Hello,",
         "assigned_intro": "You have been assigned a new admin task by {assigned_by}.",
@@ -30,6 +31,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "welcome_greeting": "नमस्ते {name},",
         "welcome_intro": "Unitary X में आपका स्वागत है! हमें खुशी है कि आप जुड़े हैं।",
         "welcome_body": "आप अपने ईमेल और पासवर्ड से साइन इन कर सकते हैं।",
+        "welcome_cta": "अपने डैशबोर्ड पर जाएं",
         "assigned_subject": "नया एडमिन कार्य सौंपा गया: {title}",
         "assigned_greeting": "नमस्ते,",
         "assigned_intro": "आपको {assigned_by} द्वारा एक नया एडमिन कार्य सौंपा गया है।",
@@ -66,7 +68,7 @@ def build_welcome_payload(name: str, locale: str | None = None, app_url: str | N
         "intro": text["welcome_intro"],
         "body": text["welcome_body"],
         "app_url": app_url or os.getenv("APP_URL", ""),
-        "cta": text["assigned_cta"],
+        "cta": text["welcome_cta"],
     }
     plain = _render_template("welcome.txt", context)
     html = _render_template("welcome.html", context)

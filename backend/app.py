@@ -4,12 +4,13 @@ Flask Backend with Authentication System
 """
 
 from flask import (Flask, render_template, request, jsonify, make_response,
-                   redirect, url_for, flash, session)
+                   redirect, url_for, flash, session, send_from_directory, abort)
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename, safe_join
 from datetime import datetime, timedelta
 from functools import wraps
-import os, re, urllib.parse, random, smtplib, ssl, csv, json, hashlib
+import os, re, urllib.parse, random, smtplib, ssl, csv, json, hashlib, uuid
 from io import StringIO
 from email.message import EmailMessage
 from .mailers import send_welcome_email as queue_welcome_email, send_assigned_email as queue_assigned_email
@@ -18,11 +19,13 @@ from google.auth.transport import requests as google_requests
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy import inspect, text
 from werkzeug.middleware.proxy_fix import ProxyFix
+from PIL import Image, UnidentifiedImageError
 
 # Security & Config
 from flask_talisman import Talisman
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from flask_seasurf import SeaSurf
 from dotenv import load_dotenv
 
 # Keep container/host env vars authoritative while still supporting local .env defaults.
@@ -181,19 +184,11 @@ def _register_user_session(user):
 
 # ─── Security Configuration ──────────────────────────────────────────────────
 
-# 1. CSRF Protection (PERMANENTLY DISABLED via Mock)
-class DummyCSRF:
-    def __init__(self, app=None):
-        if app is not None:
-            self.init_app(app)
-    def init_app(self, app):
-        @app.context_processor
-        def inject_csrf():
-            return dict(csrf_token=lambda: "dummy_token")
-    def exempt(self, view):
-        return view
-
-csrf = DummyCSRF(app)
+# 1. CSRF Protection
+# Cookie/session/form field name defaults to '_csrf_token' (matches the hidden
+# fields already emitted by frontend/templates/admin.html) and header name
+# defaults to 'X-CSRFToken' (used by the React app's fetch wrapper).
+csrf = SeaSurf(app)
 
 # 2. Secure Headers (Talisman)
 # Force HTTPS only in production, but here we keep it flexible
@@ -595,6 +590,8 @@ class Project(db.Model):
     icon        = db.Column(db.String(80))
     bg_class    = db.Column(db.String(30))
     featured    = db.Column(db.Boolean, default=False)
+    display_order = db.Column(db.Integer, default=0)
+    photo_url   = db.Column(db.String(300))
 
     def to_dict(self):
         return {
@@ -604,6 +601,8 @@ class Project(db.Model):
             "price": self.price, "duration": self.duration,
             "rating": self.rating, "icon": self.icon,
             "bg_class": self.bg_class, "featured": self.featured,
+            "display_order": self.display_order or 0,
+            "photo_url": self.photo_url,
         }
 
 
@@ -621,10 +620,39 @@ class Testimonial(db.Model):
     active   = db.Column(db.Boolean, default=True)
 
 
+class Founder(db.Model):
+    """Team members shown in the founders/team carousel (table name kept as
+    'founders' for continuity, but holds the whole ~10-person team)."""
+    __tablename__ = 'founders'
+
+    id            = db.Column(db.Integer, primary_key=True)
+    name          = db.Column(db.String(120), nullable=False)
+    role          = db.Column(db.String(120), nullable=False)
+    bio           = db.Column(db.Text)
+    photo_url     = db.Column(db.String(300))
+    socials       = db.Column(db.Text)  # JSON-serialized dict, e.g. {"linkedin": "...", "github": "..."}
+    display_order = db.Column(db.Integer, default=0)
+    active        = db.Column(db.Boolean, default=True)
+
+    def to_dict(self):
+        try:
+            socials = json.loads(self.socials) if self.socials else {}
+        except (TypeError, ValueError):
+            socials = {}
+        return {
+            "id": self.id, "name": self.name, "role": self.role,
+            "bio": self.bio, "photo_url": self.photo_url,
+            "socials": socials,
+            "display_order": self.display_order or 0,
+            "active": bool(self.active),
+        }
+
+
 DB_BACKUP_MODELS = {
     "ab_test_configs": ABTestConfig,
     "projects": Project,
     "testimonials": Testimonial,
+    "founders": Founder,
     "project_requests": ProjectRequest,
     "admin_tasks": AdminTask,
     "admin_audit_logs": AdminAuditLog,
@@ -740,6 +768,19 @@ def admin_required(f):
         if session.get('role') != 'admin':
             flash('Admin access only.', 'danger')
             return redirect(url_for('user_dashboard'))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def api_admin_required(f):
+    """Same session checks as admin_required, but always responds with JSON
+    (401/403) instead of redirecting — for fetch-only /api/admin/* routes."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({"success": False, "message": "Authentication required."}), 401
+        if session.get('role') != 'admin':
+            return jsonify({"success": False, "message": "Admin access only."}), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -1577,6 +1618,10 @@ def _ensure_schema_columns():
             ("last_followup_at", "TIMESTAMP"),
             ("next_followup_at", "TIMESTAMP"),
         ],
+        "projects": [
+            ("display_order", "INTEGER DEFAULT 0"),
+            ("photo_url", "VARCHAR(300)"),
+        ],
     }
 
     for table_name, columns in table_patch_map.items():
@@ -1594,26 +1639,25 @@ def _ensure_schema_columns():
 
 # ─── Public Routes ────────────────────────────────────────────────────────────
 
-@app.route("/")
-def index():
-    projects     = Project.query.all()
-    testimonials = Testimonial.query.filter_by(active=True).all()
-    feedback_posts = PublicFeedback.query.order_by(PublicFeedback.created_at.desc()).limit(10).all()
-    stats = {
-        "projects_done":  Project.query.count() + 194,
-        "happy_students": 150,
-        "years_exp":      5,
-        "satisfaction":   99,
-    }
-    return render_template("index.html", projects=projects,
-                           testimonials=testimonials, stats=stats,
-                           user=current_user(),
-                           feedback_posts=feedback_posts)
+# Built by `npm run build` in frontend/app — see Dockerfile for the build stage
+# that produces this in the deployed image.
+DIST_DIR = os.path.join(PROJECT_ROOT, "frontend", "app", "dist")
 
 
-@app.route('/favicon.ico')
-def favicon():
-    return redirect(url_for('static', filename='img/logo.png'))
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def index(path):
+    """Serves the built React SPA for every non-API, non-static route,
+    including static files copied from frontend/app/public/ (robots.txt,
+    sitemap.xml, favicons, og-image.jpg) at the paths Vite places them.
+    Kept as endpoint 'index' since other routes still redirect via
+    url_for('index', _anchor=...)."""
+    if path.startswith(("api/", "static/")):
+        abort(404)
+    candidate = safe_join(DIST_DIR, path) if path else None
+    if candidate and os.path.isfile(candidate):
+        return send_from_directory(DIST_DIR, path)
+    return send_from_directory(DIST_DIR, "index.html")
 
 
 # ─── Auth Routes ──────────────────────────────────────────────────────────────
@@ -2150,7 +2194,7 @@ def api_contact():
 
     return jsonify({
         "success": True,
-        "message": f"Thanks {name}! 🎉 Your request has been received. 🚀 Redirecting you to your dashboard... ✨",
+        "message": f"Thanks, {name}. Your request has been received — redirecting you to your dashboard.",
         "id": req.id
     }), 201
 
@@ -2231,9 +2275,301 @@ def submit_public_feedback():
 @app.route("/api/projects")
 def api_projects():
     category = request.args.get("category", "all")
-    projects = Project.query.all() if category == "all" \
-               else Project.query.filter_by(category=category).all()
+    query = Project.query if category == "all" else Project.query.filter_by(category=category)
+    projects = query.order_by(Project.display_order.asc(), Project.id.asc()).all()
     return jsonify([p.to_dict() for p in projects])
+
+
+@app.route("/api/csrf-token")
+def api_csrf_token():
+    if 'user_id' not in session:
+        return jsonify({"success": False, "message": "Authentication required."}), 401
+    return jsonify({"token": csrf._get_token()})
+
+
+# ─── API — Founders / Team ─────────────────────────────────────────────────────
+
+@app.route("/api/founders")
+def api_founders():
+    founders = Founder.query.filter_by(active=True) \
+        .order_by(Founder.display_order.asc(), Founder.id.asc()).all()
+    return jsonify([f.to_dict() for f in founders])
+
+
+@app.route("/api/admin/founders", methods=["GET"])
+@api_admin_required
+def api_admin_founders_list():
+    founders = Founder.query.order_by(Founder.display_order.asc(), Founder.id.asc()).all()
+    return jsonify([f.to_dict() for f in founders])
+
+
+@app.route("/api/admin/founders", methods=["POST"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_founders_create():
+    data = request_payload()
+    name = str(data.get("name", "")).strip()
+    role = str(data.get("role", "")).strip()
+    if not name or not role:
+        return jsonify({"success": False, "message": "name and role are required."}), 400
+
+    max_order = db.session.query(db.func.max(Founder.display_order)).scalar() or 0
+    founder = Founder(
+        name=name,
+        role=role,
+        bio=str(data.get("bio", "")).strip() or None,
+        photo_url=str(data.get("photo_url", "")).strip() or None,
+        socials=json.dumps(data.get("socials")) if isinstance(data.get("socials"), dict) else None,
+        display_order=int(data.get("display_order", max_order + 1)),
+        active=bool(data.get("active", True)),
+    )
+    db.session.add(founder)
+    db.session.commit()
+    return jsonify({"success": True, "founder": founder.to_dict()}), 201
+
+
+@app.route("/api/admin/founders/<int:founder_id>", methods=["PUT"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["PUT"])
+def api_admin_founders_update(founder_id):
+    founder = Founder.query.get(founder_id)
+    if not founder:
+        return jsonify({"success": False, "message": "Founder not found."}), 404
+
+    data = request_payload()
+    if "name" in data:
+        name = str(data.get("name", "")).strip()
+        if not name:
+            return jsonify({"success": False, "message": "name cannot be empty."}), 400
+        founder.name = name
+    if "role" in data:
+        role = str(data.get("role", "")).strip()
+        if not role:
+            return jsonify({"success": False, "message": "role cannot be empty."}), 400
+        founder.role = role
+    if "bio" in data:
+        founder.bio = str(data.get("bio", "")).strip() or None
+    if "photo_url" in data:
+        founder.photo_url = str(data.get("photo_url", "")).strip() or None
+    if "socials" in data:
+        socials = data.get("socials")
+        founder.socials = json.dumps(socials) if isinstance(socials, dict) else None
+    if "display_order" in data:
+        founder.display_order = int(data.get("display_order") or 0)
+    if "active" in data:
+        founder.active = bool(data.get("active"))
+
+    db.session.commit()
+    return jsonify({"success": True, "founder": founder.to_dict()})
+
+
+@app.route("/api/admin/founders/<int:founder_id>", methods=["DELETE"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["DELETE"])
+def api_admin_founders_delete(founder_id):
+    founder = Founder.query.get(founder_id)
+    if not founder:
+        return jsonify({"success": False, "message": "Founder not found."}), 404
+    db.session.delete(founder)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+@app.route("/api/admin/founders/reorder", methods=["POST"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_founders_reorder():
+    data = request_payload()
+    order = data.get("order")
+    if not isinstance(order, list) or not order:
+        return jsonify({"success": False, "message": "order must be a non-empty list of ids."}), 400
+
+    try:
+        order_ids = [int(x) for x in order]
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "order must contain integer ids."}), 400
+
+    founders = {f.id: f for f in Founder.query.filter(Founder.id.in_(order_ids)).all()}
+    if len(founders) != len(set(order_ids)):
+        return jsonify({"success": False, "message": "One or more founder ids were not found."}), 400
+
+    for index, founder_id in enumerate(order_ids):
+        founders[founder_id].display_order = index
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+# ─── API — Admin Projects CRUD ──────────────────────────────────────────────────
+
+@app.route("/api/admin/projects", methods=["POST"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_projects_create():
+    data = request_payload()
+    title = str(data.get("title", "")).strip()
+    description = str(data.get("description", "")).strip()
+    category = str(data.get("category", "")).strip()
+    if not title or not description or not category:
+        return jsonify({"success": False, "message": "title, description and category are required."}), 400
+
+    tags = data.get("tags")
+    if isinstance(tags, list):
+        tags = ",".join(str(t).strip() for t in tags if str(t).strip())
+
+    max_order = db.session.query(db.func.max(Project.display_order)).scalar() or 0
+    project = Project(
+        title=title,
+        description=description,
+        category=category,
+        tags=tags or None,
+        price=str(data.get("price", "")).strip() or None,
+        duration=str(data.get("duration", "")).strip() or None,
+        rating=float(data.get("rating", 5.0) or 5.0),
+        icon=str(data.get("icon", "")).strip() or None,
+        bg_class=str(data.get("bg_class", "")).strip() or None,
+        featured=bool(data.get("featured", False)),
+        display_order=int(data.get("display_order", max_order + 1)),
+        photo_url=str(data.get("photo_url", "")).strip() or None,
+    )
+    db.session.add(project)
+    db.session.commit()
+    return jsonify({"success": True, "project": project.to_dict()}), 201
+
+
+@app.route("/api/admin/projects/<int:project_id>", methods=["PUT"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["PUT"])
+def api_admin_projects_update(project_id):
+    project = Project.query.get(project_id)
+    if not project:
+        return jsonify({"success": False, "message": "Project not found."}), 404
+
+    data = request_payload()
+    if "title" in data:
+        title = str(data.get("title", "")).strip()
+        if not title:
+            return jsonify({"success": False, "message": "title cannot be empty."}), 400
+        project.title = title
+    if "description" in data:
+        description = str(data.get("description", "")).strip()
+        if not description:
+            return jsonify({"success": False, "message": "description cannot be empty."}), 400
+        project.description = description
+    if "category" in data:
+        category = str(data.get("category", "")).strip()
+        if not category:
+            return jsonify({"success": False, "message": "category cannot be empty."}), 400
+        project.category = category
+    if "tags" in data:
+        tags = data.get("tags")
+        if isinstance(tags, list):
+            tags = ",".join(str(t).strip() for t in tags if str(t).strip())
+        project.tags = tags or None
+    if "price" in data:
+        project.price = str(data.get("price", "")).strip() or None
+    if "duration" in data:
+        project.duration = str(data.get("duration", "")).strip() or None
+    if "rating" in data:
+        project.rating = float(data.get("rating") or 5.0)
+    if "icon" in data:
+        project.icon = str(data.get("icon", "")).strip() or None
+    if "bg_class" in data:
+        project.bg_class = str(data.get("bg_class", "")).strip() or None
+    if "featured" in data:
+        project.featured = bool(data.get("featured"))
+    if "display_order" in data:
+        project.display_order = int(data.get("display_order") or 0)
+    if "photo_url" in data:
+        project.photo_url = str(data.get("photo_url", "")).strip() or None
+
+    db.session.commit()
+    return jsonify({"success": True, "project": project.to_dict()})
+
+
+@app.route("/api/admin/projects/<int:project_id>", methods=["DELETE"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["DELETE"])
+def api_admin_projects_delete(project_id):
+    project = Project.query.get(project_id)
+    if not project:
+        return jsonify({"success": False, "message": "Project not found."}), 404
+    db.session.delete(project)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+@app.route("/api/admin/projects/reorder", methods=["POST"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_projects_reorder():
+    data = request_payload()
+    order = data.get("order")
+    if not isinstance(order, list) or not order:
+        return jsonify({"success": False, "message": "order must be a non-empty list of ids."}), 400
+
+    try:
+        order_ids = [int(x) for x in order]
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "order must contain integer ids."}), 400
+
+    projects = {p.id: p for p in Project.query.filter(Project.id.in_(order_ids)).all()}
+    if len(projects) != len(set(order_ids)):
+        return jsonify({"success": False, "message": "One or more project ids were not found."}), 400
+
+    for index, project_id in enumerate(order_ids):
+        projects[project_id].display_order = index
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+# ─── API — Admin Image Upload ───────────────────────────────────────────────────
+
+ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+UPLOAD_MAX_DIMENSIONS = {"founders": 1600, "projects": 1200}
+
+
+@app.route("/api/admin/upload", methods=["POST"])
+@api_admin_required
+@limiter.limit("30 per hour", methods=["POST"])
+def api_admin_upload():
+    kind = (request.form.get("kind") or "").strip().lower()
+    if kind not in UPLOAD_MAX_DIMENSIONS:
+        return jsonify({"success": False, "message": "kind must be 'founders' or 'projects'."}), 400
+
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"success": False, "message": "No file provided."}), 400
+
+    ext = os.path.splitext(secure_filename(upload.filename))[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        return jsonify({"success": False, "message": "Unsupported file type."}), 400
+
+    raw = upload.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return jsonify({"success": False, "message": "File too large (max 8MB)."}), 400
+
+    from io import BytesIO
+    try:
+        probe = Image.open(BytesIO(raw))
+        probe.verify()
+        image = Image.open(BytesIO(raw))
+        image.load()
+    except (UnidentifiedImageError, OSError):
+        return jsonify({"success": False, "message": "File is not a valid image."}), 400
+
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+
+    max_dim = UPLOAD_MAX_DIMENSIONS[kind]
+    image.thumbnail((max_dim, max_dim), Image.LANCZOS)
+
+    filename = f"{uuid.uuid4().hex}.jpg"
+    upload_dir = os.path.join(PROJECT_ROOT, "frontend", "static", "uploads", kind)
+    os.makedirs(upload_dir, exist_ok=True)
+    image.save(os.path.join(upload_dir, filename), format="JPEG", quality=85, optimize=True)
+
+    return jsonify({"success": True, "url": f"/static/uploads/{kind}/{filename}"}), 201
 
 
 @app.route("/api/traffic/page-view", methods=["POST"])

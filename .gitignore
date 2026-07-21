@@ -26,3 +26,10 @@ instance/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Frontend build (frontend/app — Vite + React public site)
+frontend/app/node_modules/
+frontend/app/dist/
+
+# Uploaded founder/project photos (local disk storage, not source-controlled)
+frontend/static/uploads/

@@ -1,0 +1,32 @@
+.hero-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.hero-title {
+  font-size: clamp(2.5rem, 6vw, 4.5rem);
+  font-weight: 800;
+  line-height: 1.05;
+  max-width: 18ch;
+}
+
+.hero-subtitle {
+  max-width: 52ch;
+  font-size: 1.1rem;
+  line-height: 1.6;
+}
+
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  margin-top: 0.5rem;
+}
+
+.hero-secondary-link {
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+}
