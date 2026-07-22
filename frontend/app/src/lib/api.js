@@ -48,3 +48,13 @@ export async function apiFetch(path, options = {}) {
 
 export const getJSON = (path) => apiFetch(path);
 export const postJSON = (path, data) => apiFetch(path, { method: 'POST', body: JSON.stringify(data) });
+export const putJSON = (path, data) => apiFetch(path, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteReq = (path) => apiFetch(path, { method: 'DELETE' });
+
+// Multipart image upload. `kind` is 'founders' or 'projects'. Returns { url }.
+export async function uploadImage(file, kind) {
+  const form = new FormData();
+  form.append('kind', kind);
+  form.append('file', file);
+  return apiFetch('/api/admin/upload', { method: 'POST', body: form });
+}
