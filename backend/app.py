@@ -2684,26 +2684,40 @@ def api_admin_upload():
         probe.verify()
         image = Image.open(BytesIO(raw))
         image.load()
-    except (UnidentifiedImageError, OSError):
+    except Exception:
         return jsonify({"success": False, "message": "File is not a valid image."}), 400
 
-    # Phone cameras store orientation in EXIF and keep the pixels un-rotated.
-    # We re-encode to JPEG and drop EXIF, so bake the rotation into the pixels
-    # first — otherwise portrait photos display sideways.
-    image = ImageOps.exif_transpose(image)
+    try:
+        # Phone cameras store orientation in EXIF and keep the pixels un-rotated.
+        # We re-encode to JPEG and drop EXIF, so bake the rotation into the pixels
+        # first — otherwise portrait photos display sideways.
+        try:
+            image = ImageOps.exif_transpose(image)
+        except Exception:
+            pass
 
-    if image.mode not in ("RGB", "L"):
-        image = image.convert("RGB")
+        # Handle RGBA/transparency gracefully by blending onto a white background
+        if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            if image.mode != "RGBA":
+                image = image.convert("RGBA")
+            background.paste(image, mask=image.split()[3])
+            image = background
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
 
-    max_dim = UPLOAD_MAX_DIMENSIONS[kind]
-    image.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        max_dim = UPLOAD_MAX_DIMENSIONS[kind]
+        image.thumbnail((max_dim, max_dim), Image.LANCZOS)
 
-    filename = f"{uuid.uuid4().hex}.jpg"
-    upload_dir = os.path.join(PROJECT_ROOT, "frontend", "static", "uploads", kind)
-    os.makedirs(upload_dir, exist_ok=True)
-    image.save(os.path.join(upload_dir, filename), format="JPEG", quality=85, optimize=True)
+        filename = f"{uuid.uuid4().hex}.jpg"
+        upload_dir = os.path.join(PROJECT_ROOT, "frontend", "static", "uploads", kind)
+        os.makedirs(upload_dir, exist_ok=True)
+        image.save(os.path.join(upload_dir, filename), format="JPEG", quality=85, optimize=True)
 
-    return jsonify({"success": True, "url": f"/static/uploads/{kind}/{filename}"}), 201
+        return jsonify({"success": True, "url": f"/static/uploads/{kind}/{filename}"}), 201
+    except Exception as e:
+        app.logger.exception("Failed to process and save uploaded image")
+        return jsonify({"success": False, "message": f"Failed to save image: {str(e)}"}), 500
 
 
 @app.route("/api/traffic/page-view", methods=["POST"])
