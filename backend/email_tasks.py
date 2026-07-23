@@ -11,6 +11,16 @@ CELERY_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "")
 celery = None
 if CELERY_BROKER:
     celery = Celery("unitaryx_email_tasks", broker=CELERY_BROKER, backend=CELERY_BACKEND or None)
+    # Fail fast when the broker is unreachable (local dev with no Redis, or a
+    # downed broker in prod) so the caller can fall back to a synchronous send
+    # instead of blocking on connection retries. Without this, enqueuing mail
+    # against a missing broker hangs and no email is ever delivered.
+    celery.conf.broker_transport_options = {
+        "socket_timeout": 3,
+        "socket_connect_timeout": 3,
+    }
+    celery.conf.broker_connection_retry_on_startup = False
+    celery.conf.broker_connection_max_retries = 0
 
 
 def _smtp_send_message_local(msg: EmailMessage):

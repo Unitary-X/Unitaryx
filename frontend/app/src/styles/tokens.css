@@ -1,0 +1,34 @@
+:root {
+  --canvas: #f3f6fc;
+  --canvas-2: #eaf0fa;
+  --ink: #10152b;
+  --ink-soft: #4a5170;
+  --ink-faint: #8890ac;
+  --cobalt: #2f5cff;
+  --cobalt-deep: #1b3fcc;
+  --brass: #b8873e;
+  --brass-soft: #e4cb98;
+  --glass: rgba(255, 255, 255, 0.58);
+  --glass-strong: rgba(255, 255, 255, 0.78);
+  --glass-panel: rgba(243, 246, 252, 0.94);
+  --line: rgba(16, 21, 43, 0.08);
+
+  --font-display: 'Bricolage Grotesque', sans-serif;
+  --font-body: 'Plus Jakarta Sans', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --panel-height-desktop: 130vh;
+  --panel-height-mobile: 120vh;
+}
+
+/* background-clip/background don't inherit to children, and KineticText
+   splits headline text into per-word <span> elements for its stagger
+   animation — so the gradient-clip must be re-applied on those spans too,
+   not just the heading element, or the text renders fully invisible. */
+.gradient-headline,
+.gradient-headline span {
+  background: linear-gradient(100deg, var(--cobalt) 10%, var(--cobalt-deep) 55%, var(--brass) 110%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}

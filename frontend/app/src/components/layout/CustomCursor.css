@@ -1,0 +1,65 @@
+/* Precise inner dot — sits (almost) exactly under the pointer. */
+.cursor-dot {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: var(--cobalt);
+  box-shadow: 0 0 10px -2px rgba(47, 92, 255, 0.6);
+  pointer-events: none;
+  z-index: 10000;
+}
+
+/* Larger ring that trails the dot with a softer spring. */
+.cursor-ring {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 40px;
+  height: 40px;
+  margin: -20px 0 0 -20px;
+  border-radius: 50%;
+  border: 1.5px solid var(--cobalt);
+  background: rgba(47, 92, 255, 0.06);
+  pointer-events: none;
+  z-index: 9999;
+  transition: width 0.22s ease, height 0.22s ease, margin 0.22s ease,
+    background 0.22s ease, border-color 0.22s ease;
+}
+
+/* Over interactive elements tagged data-cursor="ring", the ring swells. */
+.cursor-ring--ring {
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  background: rgba(47, 92, 255, 0.1);
+}
+
+/* Over project cards (data-cursor="view") it becomes a labelled pill in the
+   signature cobalt→brass gradient. */
+.cursor-ring--view {
+  width: 72px;
+  height: 72px;
+  margin: -36px 0 0 -36px;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--cobalt) 20%, var(--cobalt-deep) 70%, var(--brass) 130%);
+  box-shadow: 0 8px 24px -8px rgba(31, 53, 147, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 899px) {
+  .cursor-dot,
+  .cursor-ring {
+    display: none;
+  }
+}

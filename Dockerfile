@@ -1,4 +1,16 @@
-# Stage 1: Builder
+# Stage 1: Frontend build (Vite + React public site)
+FROM node:22-slim AS frontend-builder
+
+WORKDIR /build
+
+COPY frontend/app/package*.json ./
+RUN npm ci
+
+COPY frontend/app/ ./
+RUN npm run build
+
+
+# Stage 2: Builder
 FROM python:3.12-slim AS builder
 
 # Set environment variables for build
@@ -18,7 +30,7 @@ COPY requirements-docker.txt .
 RUN pip wheel --no-cache-dir --no-deps --wheel-dir /usr/src/app/wheels -r requirements-docker.txt
 
 
-# Stage 2: Final Production Image
+# Stage 3: Final Production Image
 FROM python:3.12-slim
 
 # Set runtime environment variables
@@ -44,8 +56,13 @@ RUN useradd -m -u 1000 appuser
 # Copy application code
 COPY . /app
 
+# Copy the built React public site (frontend/app/dist) — served by Flask's
+# catch-all route (backend/app.py: DIST_DIR)
+COPY --from=frontend-builder /build/dist /app/frontend/app/dist
+
 # Setup directories and permissions
-RUN mkdir -p /app/data /app/instance/db_backups && \
+RUN mkdir -p /app/data /app/instance/db_backups \
+    /app/frontend/static/uploads/founders /app/frontend/static/uploads/projects && \
     chown -R appuser:appuser /app
 
 # Switch to non-root user

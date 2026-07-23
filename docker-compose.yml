@@ -140,6 +140,7 @@ services:
     volumes:
       - ${APP_VOLUME_PATH:-./data/app}:/app/data
       - ${APP_BACKUP_PATH:-./data/backups}:/app/instance/db_backups
+      - ${APP_UPLOADS_PATH:-./data/uploads}:/app/frontend/static/uploads
     
     logging:
       driver: "json-file"

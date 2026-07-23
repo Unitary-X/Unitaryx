@@ -1,0 +1,24 @@
+.scroll-rail {
+  position: fixed;
+  left: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.scroll-rail-track {
+  width: 2px;
+  height: 140px;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.scroll-rail-fill {
+  width: 100%;
+  background: linear-gradient(to bottom, var(--cobalt), var(--brass));
+  transition: height 0.2s ease-out;
+}

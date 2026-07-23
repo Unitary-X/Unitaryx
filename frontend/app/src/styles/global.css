@@ -1,0 +1,114 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* The pinned panels use z-index 1–5; the normal-flow content block sits above
+   them so it slides up and covers the last pinned panel as you scroll. */
+.pinned-stack {
+  position: relative;
+  z-index: 1;
+}
+
+.marketing-flow {
+  position: relative;
+  z-index: 6;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Hide the browser scrollbar while keeping scrolling fully functional — the
+   left-edge ScrollRail already signals progress. Do NOT use overflow:hidden
+   here (that would disable scrolling); this only removes the visible track. */
+html {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge/IE */
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none; /* Chromium, Safari */
+}
+
+/* On devices where the custom cursor is active, hide the default OS cursor so
+   only the branded cursor shows. Scoped to the exact conditions CustomCursor
+   renders under (fine pointer + hover, motion allowed) so touch and
+   reduced-motion users keep their normal cursor. */
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  *,
+  *::before,
+  *::after {
+    cursor: none !important;
+  }
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+p {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.75rem;
+  color: var(--cobalt);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

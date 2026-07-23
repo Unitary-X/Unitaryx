@@ -1,0 +1,165 @@
+.navbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  padding: 1rem clamp(1rem, 4vw, 2.5rem) 0;
+}
+
+.navbar-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.6rem 0.6rem 0.6rem 1.1rem;
+  border-radius: 999px;
+  transition: box-shadow 0.3s ease, background 0.3s ease;
+}
+
+.navbar--scrolled .navbar-inner {
+  box-shadow: 0 12px 32px -12px rgba(31, 53, 147, 0.28);
+}
+
+.nav-logo {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.nav-logo span {
+  color: var(--cobalt);
+}
+
+.nav-links {
+  display: flex;
+  gap: 1.5rem;
+  margin-right: auto;
+}
+
+.nav-links a {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  text-decoration: none;
+}
+
+.nav-links a:hover {
+  color: var(--cobalt);
+}
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.nav-primary-cta {
+  padding: 0.55rem 1.2rem;
+  font-size: 0.85rem;
+}
+
+.nav-cta {
+  padding: 0.55rem 1.1rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--glass-strong);
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 0.85rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* Logout — secondary/ghost styling so it reads as the lesser action next to
+   the primary Studio/Dashboard button. */
+.nav-cta--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-soft);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.nav-cta--ghost:hover {
+  color: var(--cobalt);
+  background: rgba(47, 92, 255, 0.08);
+}
+
+.nav-mobile-logout {
+  margin-top: 0.25rem;
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.nav-mobile-logout:hover {
+  background: rgba(47, 92, 255, 0.08);
+  color: var(--cobalt);
+}
+
+.nav-toggle {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--glass-strong);
+  cursor: pointer;
+}
+
+.nav-toggle span {
+  display: block;
+  width: 16px;
+  height: 2px;
+  background: var(--ink);
+  border-radius: 2px;
+}
+
+.nav-mobile {
+  margin: 0.5rem clamp(1rem, 4vw, 2.5rem) 0;
+  border-radius: 20px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-mobile a {
+  padding: 0.75rem 1rem;
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 600;
+  border-radius: 12px;
+}
+
+.nav-mobile a:hover {
+  background: rgba(47, 92, 255, 0.08);
+}
+
+@media (max-width: 860px) {
+  .nav-links,
+  .nav-primary-cta,
+  .nav-cta {
+    display: none;
+  }
+
+  .nav-toggle {
+    display: flex;
+  }
+}

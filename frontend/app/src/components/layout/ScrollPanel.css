@@ -1,0 +1,67 @@
+.scroll-panel-wrapper {
+  position: relative;
+  height: var(--panel-height-desktop);
+  z-index: var(--panel-index);
+}
+
+.scroll-panel {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.glass-panel {
+  background: var(--glass-panel);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 -24px 48px -24px rgba(16, 21, 43, 0.12) inset;
+}
+
+.scroll-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 80px;
+  background: linear-gradient(to bottom, rgba(16, 21, 43, 0.06), transparent);
+  pointer-events: none;
+}
+
+.panel-inner {
+  max-width: 1180px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 clamp(1.5rem, 5vw, 4rem);
+}
+
+@media (max-width: 768px) {
+  .scroll-panel-wrapper {
+    height: var(--panel-height-mobile);
+  }
+}
+
+/* Quality floor (CLAUDE.md §8): pin-and-cover is itself a large-scale motion
+   effect, not just decorative animation — under reduced motion the sticky
+   stack must degrade to normal document flow, not just skip transitions. */
+@media (prefers-reduced-motion: reduce) {
+  .scroll-panel-wrapper {
+    height: auto;
+  }
+
+  .scroll-panel {
+    position: static;
+    height: auto;
+    min-height: 100vh;
+    padding: 4rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .scroll-panel::before {
+    display: none;
+  }
+}

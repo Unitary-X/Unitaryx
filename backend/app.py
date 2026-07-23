@@ -4,12 +4,13 @@ Flask Backend with Authentication System
 """
 
 from flask import (Flask, render_template, request, jsonify, make_response,
-                   redirect, url_for, flash, session)
+                   redirect, url_for, flash, session, send_from_directory, abort)
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename, safe_join
 from datetime import datetime, timedelta
 from functools import wraps
-import os, re, urllib.parse, random, smtplib, ssl, csv, json, hashlib
+import os, re, urllib.parse, random, smtplib, ssl, csv, json, hashlib, uuid
 from io import StringIO
 from email.message import EmailMessage
 from .mailers import send_welcome_email as queue_welcome_email, send_assigned_email as queue_assigned_email
@@ -18,11 +19,13 @@ from google.auth.transport import requests as google_requests
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy import inspect, text
 from werkzeug.middleware.proxy_fix import ProxyFix
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 # Security & Config
 from flask_talisman import Talisman
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from flask_seasurf import SeaSurf
 from dotenv import load_dotenv
 
 # Keep container/host env vars authoritative while still supporting local .env defaults.
@@ -32,6 +35,31 @@ BACKUP_DIR = os.path.join(APP_DIR, "instance", "db_backups")
 load_dotenv(os.path.join(APP_DIR, ".env"), override=False)
 # Also support launching from workspace root where SMTP/OAuth vars are often stored.
 load_dotenv(os.path.join(os.path.dirname(APP_DIR), ".env"), override=False)
+# When running from a git worktree (…/.claude/worktrees/<name>/backend) the
+# real .env lives several levels up in the main checkout and isn't copied in
+# (it's gitignored). Walk up the tree and load the first .env found so local
+# worktree runs pick up SMTP/OAuth creds instead of silently failing to send.
+# Skipped under the test suite (conftest sets the flag) so tests never inherit
+# real SMTP creds / prod values and can't hit live mail servers.
+if not os.getenv("UNITARYX_SKIP_DOTENV_WALKUP"):
+    _env_probe = os.path.dirname(APP_DIR)
+    for _ in range(6):
+        _env_probe = os.path.dirname(_env_probe)
+        if not _env_probe:
+            break
+        _candidate = os.path.join(_env_probe, ".env")
+        if os.path.isfile(_candidate):
+            load_dotenv(_candidate, override=False)
+            break
+
+# Canonical public URL, used for absolute links in transactional emails (the
+# welcome/task CTA buttons render only when this is set). Falls back to the
+# production domain so those buttons never silently disappear when APP_URL is
+# left blank in the environment.
+DEFAULT_APP_URL = "https://unitaryx.org"
+
+def resolved_app_url():
+    return (os.getenv("APP_URL") or "").strip() or DEFAULT_APP_URL
 
 app = Flask(
     __name__,
@@ -181,19 +209,11 @@ def _register_user_session(user):
 
 # ─── Security Configuration ──────────────────────────────────────────────────
 
-# 1. CSRF Protection (PERMANENTLY DISABLED via Mock)
-class DummyCSRF:
-    def __init__(self, app=None):
-        if app is not None:
-            self.init_app(app)
-    def init_app(self, app):
-        @app.context_processor
-        def inject_csrf():
-            return dict(csrf_token=lambda: "dummy_token")
-    def exempt(self, view):
-        return view
-
-csrf = DummyCSRF(app)
+# 1. CSRF Protection
+# Cookie/session/form field name defaults to '_csrf_token' (still emitted by the
+# remaining Jinja login form) and header name defaults to 'X-CSRFToken' (used by
+# the React studio/dashboard fetch wrapper).
+csrf = SeaSurf(app)
 
 # 2. Secure Headers (Talisman)
 # Force HTTPS only in production, but here we keep it flexible
@@ -595,6 +615,8 @@ class Project(db.Model):
     icon        = db.Column(db.String(80))
     bg_class    = db.Column(db.String(30))
     featured    = db.Column(db.Boolean, default=False)
+    display_order = db.Column(db.Integer, default=0)
+    photo_url   = db.Column(db.String(300))
 
     def to_dict(self):
         return {
@@ -604,6 +626,8 @@ class Project(db.Model):
             "price": self.price, "duration": self.duration,
             "rating": self.rating, "icon": self.icon,
             "bg_class": self.bg_class, "featured": self.featured,
+            "display_order": self.display_order or 0,
+            "photo_url": self.photo_url,
         }
 
 
@@ -621,10 +645,39 @@ class Testimonial(db.Model):
     active   = db.Column(db.Boolean, default=True)
 
 
+class Founder(db.Model):
+    """Team members shown in the founders/team carousel (table name kept as
+    'founders' for continuity, but holds the whole ~10-person team)."""
+    __tablename__ = 'founders'
+
+    id            = db.Column(db.Integer, primary_key=True)
+    name          = db.Column(db.String(120), nullable=False)
+    role          = db.Column(db.String(120), nullable=False)
+    bio           = db.Column(db.Text)
+    photo_url     = db.Column(db.String(300))
+    socials       = db.Column(db.Text)  # JSON-serialized dict, e.g. {"linkedin": "...", "github": "..."}
+    display_order = db.Column(db.Integer, default=0)
+    active        = db.Column(db.Boolean, default=True)
+
+    def to_dict(self):
+        try:
+            socials = json.loads(self.socials) if self.socials else {}
+        except (TypeError, ValueError):
+            socials = {}
+        return {
+            "id": self.id, "name": self.name, "role": self.role,
+            "bio": self.bio, "photo_url": self.photo_url,
+            "socials": socials,
+            "display_order": self.display_order or 0,
+            "active": bool(self.active),
+        }
+
+
 DB_BACKUP_MODELS = {
     "ab_test_configs": ABTestConfig,
     "projects": Project,
     "testimonials": Testimonial,
+    "founders": Founder,
     "project_requests": ProjectRequest,
     "admin_tasks": AdminTask,
     "admin_audit_logs": AdminAuditLog,
@@ -740,6 +793,47 @@ def admin_required(f):
         if session.get('role') != 'admin':
             flash('Admin access only.', 'danger')
             return redirect(url_for('user_dashboard'))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def api_admin_required(f):
+    """Same session checks as admin_required, but always responds with JSON
+    (401/403) instead of redirecting — for fetch-only /api/admin/* routes."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({"success": False, "message": "Authentication required."}), 401
+        if session.get('role') != 'admin':
+            return jsonify({"success": False, "message": "Admin access only."}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+def api_superadmin_required(f):
+    """Like api_admin_required, but additionally restricts to the superadmin
+    account (by email or admin_scope == 'superadmin'). Used for Founders/
+    Projects management, which is deliberately kept out of reach of ordinary
+    ops/finance/support admins and, of course, consumer accounts."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({"success": False, "message": "Authentication required."}), 401
+        if session.get('role') != 'admin':
+            return jsonify({"success": False, "message": "Admin access only."}), 403
+        if not is_super_admin(current_user()):
+            return jsonify({"success": False, "message": "Superadmin access only."}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+def api_login_required(f):
+    """Like login_required, but responds with JSON 401 instead of redirecting —
+    for fetch-only customer API routes (e.g. the React dashboard)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({"success": False, "message": "Authentication required."}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -1378,7 +1472,7 @@ def _send_welcome_email(email, name):
         name=name,
         sender=smtp_from,
         locale=os.getenv("MAIL_LOCALE", "en"),
-        app_url=os.getenv("APP_URL", ""),
+        app_url=resolved_app_url(),
     )
 
 
@@ -1395,7 +1489,7 @@ def _send_task_assigned_email(email, title, details, assigned_by):
         assigned_by=assigned_by,
         sender=smtp_from,
         locale=os.getenv("MAIL_LOCALE", "en"),
-        app_url=os.getenv("APP_URL", ""),
+        app_url=resolved_app_url(),
     )
 
 
@@ -1577,6 +1671,10 @@ def _ensure_schema_columns():
             ("last_followup_at", "TIMESTAMP"),
             ("next_followup_at", "TIMESTAMP"),
         ],
+        "projects": [
+            ("display_order", "INTEGER DEFAULT 0"),
+            ("photo_url", "VARCHAR(300)"),
+        ],
     }
 
     for table_name, columns in table_patch_map.items():
@@ -1594,26 +1692,25 @@ def _ensure_schema_columns():
 
 # ─── Public Routes ────────────────────────────────────────────────────────────
 
-@app.route("/")
-def index():
-    projects     = Project.query.all()
-    testimonials = Testimonial.query.filter_by(active=True).all()
-    feedback_posts = PublicFeedback.query.order_by(PublicFeedback.created_at.desc()).limit(10).all()
-    stats = {
-        "projects_done":  Project.query.count() + 194,
-        "happy_students": 150,
-        "years_exp":      5,
-        "satisfaction":   99,
-    }
-    return render_template("index.html", projects=projects,
-                           testimonials=testimonials, stats=stats,
-                           user=current_user(),
-                           feedback_posts=feedback_posts)
+# Built by `npm run build` in frontend/app — see Dockerfile for the build stage
+# that produces this in the deployed image.
+DIST_DIR = os.path.join(PROJECT_ROOT, "frontend", "app", "dist")
 
 
-@app.route('/favicon.ico')
-def favicon():
-    return redirect(url_for('static', filename='img/logo.png'))
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def index(path):
+    """Serves the built React SPA for every non-API, non-static route,
+    including static files copied from frontend/app/public/ (robots.txt,
+    sitemap.xml, favicons, og-image.jpg) at the paths Vite places them.
+    Kept as endpoint 'index' since other routes still redirect via
+    url_for('index', _anchor=...)."""
+    if path.startswith(("api/", "static/")):
+        abort(404)
+    candidate = safe_join(DIST_DIR, path) if path else None
+    if candidate and os.path.isfile(candidate):
+        return send_from_directory(DIST_DIR, path)
+    return send_from_directory(DIST_DIR, "index.html")
 
 
 # ─── Auth Routes ──────────────────────────────────────────────────────────────
@@ -1999,6 +2096,15 @@ def api_auth_session():
             "redirect": url_for("login"),
         })
 
+    is_admin_role = normalize_role(user.role) == "admin"
+    admin_scope = normalize_admin_scope(session.get("admin_scope") or getattr(user, "admin_scope", "ops")) if is_admin_role else ""
+    is_superadmin_flag = bool(session.get("is_superadmin"))
+    capabilities = (
+        sorted(ADMIN_SCOPE_CAPABILITIES["superadmin"]) if is_superadmin_flag
+        else sorted(ADMIN_SCOPE_CAPABILITIES.get(admin_scope, set())) if is_admin_role
+        else []
+    )
+
     return jsonify({
         "authenticated": True,
         "user": {
@@ -2006,8 +2112,9 @@ def api_auth_session():
             "name": user.name,
             "email": normalize_email(user.email),
             "role": normalize_role(user.role),
-            "is_superadmin": bool(session.get("is_superadmin")),
-            "admin_scope": normalize_admin_scope(session.get("admin_scope") or getattr(user, "admin_scope", "ops")) if normalize_role(user.role) == "admin" else "",
+            "is_superadmin": is_superadmin_flag,
+            "admin_scope": admin_scope,
+            "capabilities": capabilities,
             "profile_photo": (session.get("user_profile_photo") or "").strip(),
         },
     })
@@ -2051,6 +2158,33 @@ def api_frontend_actions():
 @app.route("/dashboard")
 @login_required
 def user_dashboard():
+    # The customer dashboard is now a React route in the SPA. Keep @login_required
+    # so unauthenticated visitors are redirected to /login (route stays private and
+    # is disallowed in robots.txt). Data is loaded client-side via
+    # GET /api/dashboard/requests.
+    return send_from_directory(DIST_DIR, "index.html")
+
+
+def _customer_request_dict(req, is_updated):
+    """Customer-safe serialization of a ProjectRequest. Deliberately excludes
+    internal_notes and every lead_score_* / lead_tier / escalation_level field
+    (admin-only per CLAUDE.md §7.5)."""
+    return {
+        "id": req.id,
+        "service": req.service,
+        "message": req.message,
+        "status": req.status,
+        "priority": req.priority,
+        "value": req.value or 0,
+        "deadline": req.deadline,
+        "created_at": req.created_at.isoformat() if req.created_at else None,
+        "is_updated": is_updated,
+    }
+
+
+@app.route("/api/dashboard/requests")
+@api_login_required
+def api_dashboard_requests():
     user = current_user()
     normalized_email = (user.email or "").strip().lower()
     my_requests = ProjectRequest.query.filter(
@@ -2060,28 +2194,21 @@ def user_dashboard():
         )
     ).order_by(ProjectRequest.created_at.desc()).all()
 
-    active_updates = [r.id for r in my_requests if r.is_new_update]
+    active_updates = {r.id for r in my_requests if r.is_new_update}
 
-    # Flash updates removed to declutter dashboard
-    pass
+    # One-shot "updates" semantics preserved from the old route: flag which rows
+    # were newly updated this load, then clear the flags.
+    if active_updates:
+        for req in my_requests:
+            if req.is_new_update:
+                req.is_new_update = False
+        db.session.commit()
 
-    for req in my_requests:
-        if req.is_new_update:
-            req.is_new_update = False
-    db.session.commit()
-
-    total_value = sum((r.value or 0) for r in my_requests)
-    done_count = sum(1 for r in my_requests if r.status == "Done")
-    completion_pct = int((done_count / len(my_requests)) * 100) if my_requests else 0
-
-    return render_template(
-        "dashboard.html",
-        user=user,
-        my_requests=my_requests,
-        active_updates=active_updates,
-        total_value=total_value,
-        completion_pct=completion_pct,
-    )
+    first_name = (user.name or "").strip().split(" ")[0] if user.name else ""
+    return jsonify({
+        "user": {"name": user.name, "first_name": first_name},
+        "requests": [_customer_request_dict(r, r.id in active_updates) for r in my_requests],
+    })
 
 
 # ─── API — Contact Form ───────────────────────────────────────────────────────
@@ -2150,7 +2277,7 @@ def api_contact():
 
     return jsonify({
         "success": True,
-        "message": f"Thanks {name}! 🎉 Your request has been received. 🚀 Redirecting you to your dashboard... ✨",
+        "message": f"Thanks, {name}. Your request has been received — redirecting you to your dashboard.",
         "id": req.id
     }), 201
 
@@ -2228,12 +2355,355 @@ def submit_public_feedback():
     return redirect(url_for('index', _anchor='feedback-corner'))
 
 
+def _feedback_dict(fb):
+    return {
+        "id": fb.id,
+        "author_name": fb.author_name,
+        "rating": int(fb.rating or 5),
+        "message": fb.message,
+        "created_at": fb.created_at.strftime("%d %b %Y") if fb.created_at else "",
+    }
+
+
+@app.route("/api/feedback")
+def api_feedback_list():
+    posts = PublicFeedback.query.order_by(PublicFeedback.created_at.desc()).limit(12).all()
+    return jsonify({"feedback": [_feedback_dict(p) for p in posts]})
+
+
+@app.route("/api/feedback", methods=["POST"])
+@api_login_required
+@limiter.limit("20 per day", methods=["POST"])
+def api_feedback_create():
+    actor = current_user()
+    data = request_payload()
+    message = str(data.get("message", "")).strip()
+    try:
+        rating = int(data.get("rating", 5))
+    except (TypeError, ValueError):
+        rating = 5
+    rating = max(1, min(5, rating))
+
+    if len(message) < 4:
+        return jsonify({"success": False, "message": "Feedback must be at least 4 characters."}), 400
+    if len(message) > 1500:
+        return jsonify({"success": False, "message": "Feedback must be at most 1500 characters."}), 400
+
+    fb = PublicFeedback(
+        user_id=actor.id,
+        author_email=normalize_email(getattr(actor, "email", "")),
+        author_name=(getattr(actor, "name", "") or "User").strip()[:120],
+        rating=rating,
+        message=message,
+    )
+    db.session.add(fb)
+    db.session.commit()
+    return jsonify({"success": True, "post": _feedback_dict(fb)}), 201
+
+
 @app.route("/api/projects")
 def api_projects():
     category = request.args.get("category", "all")
-    projects = Project.query.all() if category == "all" \
-               else Project.query.filter_by(category=category).all()
+    query = Project.query if category == "all" else Project.query.filter_by(category=category)
+    projects = query.order_by(Project.display_order.asc(), Project.id.asc()).all()
     return jsonify([p.to_dict() for p in projects])
+
+
+@app.route("/api/csrf-token")
+def api_csrf_token():
+    if 'user_id' not in session:
+        return jsonify({"success": False, "message": "Authentication required."}), 401
+    return jsonify({"token": csrf._get_token()})
+
+
+# ─── API — Founders / Team ─────────────────────────────────────────────────────
+
+@app.route("/api/founders")
+def api_founders():
+    founders = Founder.query.filter_by(active=True) \
+        .order_by(Founder.display_order.asc(), Founder.id.asc()).all()
+    return jsonify([f.to_dict() for f in founders])
+
+
+@app.route("/api/admin/founders", methods=["GET"])
+@api_superadmin_required
+def api_admin_founders_list():
+    founders = Founder.query.order_by(Founder.display_order.asc(), Founder.id.asc()).all()
+    return jsonify([f.to_dict() for f in founders])
+
+
+@app.route("/api/admin/founders", methods=["POST"])
+@api_superadmin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_founders_create():
+    data = request_payload()
+    name = str(data.get("name", "")).strip()
+    role = str(data.get("role", "")).strip()
+    if not name or not role:
+        return jsonify({"success": False, "message": "name and role are required."}), 400
+
+    max_order = db.session.query(db.func.max(Founder.display_order)).scalar() or 0
+    founder = Founder(
+        name=name,
+        role=role,
+        bio=str(data.get("bio", "")).strip() or None,
+        photo_url=str(data.get("photo_url", "")).strip() or None,
+        socials=json.dumps(data.get("socials")) if isinstance(data.get("socials"), dict) else None,
+        display_order=int(data.get("display_order", max_order + 1)),
+        active=bool(data.get("active", True)),
+    )
+    db.session.add(founder)
+    db.session.commit()
+    return jsonify({"success": True, "founder": founder.to_dict()}), 201
+
+
+@app.route("/api/admin/founders/<int:founder_id>", methods=["PUT"])
+@api_superadmin_required
+@limiter.limit("120 per hour", methods=["PUT"])
+def api_admin_founders_update(founder_id):
+    founder = Founder.query.get(founder_id)
+    if not founder:
+        return jsonify({"success": False, "message": "Founder not found."}), 404
+
+    data = request_payload()
+    if "name" in data:
+        name = str(data.get("name", "")).strip()
+        if not name:
+            return jsonify({"success": False, "message": "name cannot be empty."}), 400
+        founder.name = name
+    if "role" in data:
+        role = str(data.get("role", "")).strip()
+        if not role:
+            return jsonify({"success": False, "message": "role cannot be empty."}), 400
+        founder.role = role
+    if "bio" in data:
+        founder.bio = str(data.get("bio", "")).strip() or None
+    if "photo_url" in data:
+        founder.photo_url = str(data.get("photo_url", "")).strip() or None
+    if "socials" in data:
+        socials = data.get("socials")
+        founder.socials = json.dumps(socials) if isinstance(socials, dict) else None
+    if "display_order" in data:
+        founder.display_order = int(data.get("display_order") or 0)
+    if "active" in data:
+        founder.active = bool(data.get("active"))
+
+    db.session.commit()
+    return jsonify({"success": True, "founder": founder.to_dict()})
+
+
+@app.route("/api/admin/founders/<int:founder_id>", methods=["DELETE"])
+@api_superadmin_required
+@limiter.limit("60 per hour", methods=["DELETE"])
+def api_admin_founders_delete(founder_id):
+    founder = Founder.query.get(founder_id)
+    if not founder:
+        return jsonify({"success": False, "message": "Founder not found."}), 404
+    db.session.delete(founder)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+@app.route("/api/admin/founders/reorder", methods=["POST"])
+@api_superadmin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_founders_reorder():
+    data = request_payload()
+    order = data.get("order")
+    if not isinstance(order, list) or not order:
+        return jsonify({"success": False, "message": "order must be a non-empty list of ids."}), 400
+
+    try:
+        order_ids = [int(x) for x in order]
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "order must contain integer ids."}), 400
+
+    founders = {f.id: f for f in Founder.query.filter(Founder.id.in_(order_ids)).all()}
+    if len(founders) != len(set(order_ids)):
+        return jsonify({"success": False, "message": "One or more founder ids were not found."}), 400
+
+    for index, founder_id in enumerate(order_ids):
+        founders[founder_id].display_order = index
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+# ─── API — Admin Projects CRUD ──────────────────────────────────────────────────
+
+@app.route("/api/admin/projects", methods=["POST"])
+@api_superadmin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_projects_create():
+    data = request_payload()
+    title = str(data.get("title", "")).strip()
+    description = str(data.get("description", "")).strip()
+    category = str(data.get("category", "")).strip()
+    if not title or not description or not category:
+        return jsonify({"success": False, "message": "title, description and category are required."}), 400
+
+    tags = data.get("tags")
+    if isinstance(tags, list):
+        tags = ",".join(str(t).strip() for t in tags if str(t).strip())
+
+    max_order = db.session.query(db.func.max(Project.display_order)).scalar() or 0
+    project = Project(
+        title=title,
+        description=description,
+        category=category,
+        tags=tags or None,
+        price=str(data.get("price", "")).strip() or None,
+        duration=str(data.get("duration", "")).strip() or None,
+        rating=float(data.get("rating", 5.0) or 5.0),
+        icon=str(data.get("icon", "")).strip() or None,
+        bg_class=str(data.get("bg_class", "")).strip() or None,
+        featured=bool(data.get("featured", False)),
+        display_order=int(data.get("display_order", max_order + 1)),
+        photo_url=str(data.get("photo_url", "")).strip() or None,
+    )
+    db.session.add(project)
+    db.session.commit()
+    return jsonify({"success": True, "project": project.to_dict()}), 201
+
+
+@app.route("/api/admin/projects/<int:project_id>", methods=["PUT"])
+@api_superadmin_required
+@limiter.limit("120 per hour", methods=["PUT"])
+def api_admin_projects_update(project_id):
+    project = Project.query.get(project_id)
+    if not project:
+        return jsonify({"success": False, "message": "Project not found."}), 404
+
+    data = request_payload()
+    if "title" in data:
+        title = str(data.get("title", "")).strip()
+        if not title:
+            return jsonify({"success": False, "message": "title cannot be empty."}), 400
+        project.title = title
+    if "description" in data:
+        description = str(data.get("description", "")).strip()
+        if not description:
+            return jsonify({"success": False, "message": "description cannot be empty."}), 400
+        project.description = description
+    if "category" in data:
+        category = str(data.get("category", "")).strip()
+        if not category:
+            return jsonify({"success": False, "message": "category cannot be empty."}), 400
+        project.category = category
+    if "tags" in data:
+        tags = data.get("tags")
+        if isinstance(tags, list):
+            tags = ",".join(str(t).strip() for t in tags if str(t).strip())
+        project.tags = tags or None
+    if "price" in data:
+        project.price = str(data.get("price", "")).strip() or None
+    if "duration" in data:
+        project.duration = str(data.get("duration", "")).strip() or None
+    if "rating" in data:
+        project.rating = float(data.get("rating") or 5.0)
+    if "icon" in data:
+        project.icon = str(data.get("icon", "")).strip() or None
+    if "bg_class" in data:
+        project.bg_class = str(data.get("bg_class", "")).strip() or None
+    if "featured" in data:
+        project.featured = bool(data.get("featured"))
+    if "display_order" in data:
+        project.display_order = int(data.get("display_order") or 0)
+    if "photo_url" in data:
+        project.photo_url = str(data.get("photo_url", "")).strip() or None
+
+    db.session.commit()
+    return jsonify({"success": True, "project": project.to_dict()})
+
+
+@app.route("/api/admin/projects/<int:project_id>", methods=["DELETE"])
+@api_superadmin_required
+@limiter.limit("60 per hour", methods=["DELETE"])
+def api_admin_projects_delete(project_id):
+    project = Project.query.get(project_id)
+    if not project:
+        return jsonify({"success": False, "message": "Project not found."}), 404
+    db.session.delete(project)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+@app.route("/api/admin/projects/reorder", methods=["POST"])
+@api_superadmin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_projects_reorder():
+    data = request_payload()
+    order = data.get("order")
+    if not isinstance(order, list) or not order:
+        return jsonify({"success": False, "message": "order must be a non-empty list of ids."}), 400
+
+    try:
+        order_ids = [int(x) for x in order]
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "order must contain integer ids."}), 400
+
+    projects = {p.id: p for p in Project.query.filter(Project.id.in_(order_ids)).all()}
+    if len(projects) != len(set(order_ids)):
+        return jsonify({"success": False, "message": "One or more project ids were not found."}), 400
+
+    for index, project_id in enumerate(order_ids):
+        projects[project_id].display_order = index
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+# ─── API — Admin Image Upload ───────────────────────────────────────────────────
+
+ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+UPLOAD_MAX_DIMENSIONS = {"founders": 1600, "projects": 1200}
+
+
+@app.route("/api/admin/upload", methods=["POST"])
+@api_superadmin_required
+@limiter.limit("30 per hour", methods=["POST"])
+def api_admin_upload():
+    kind = (request.form.get("kind") or "").strip().lower()
+    if kind not in UPLOAD_MAX_DIMENSIONS:
+        return jsonify({"success": False, "message": "kind must be 'founders' or 'projects'."}), 400
+
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"success": False, "message": "No file provided."}), 400
+
+    ext = os.path.splitext(secure_filename(upload.filename))[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        return jsonify({"success": False, "message": "Unsupported file type."}), 400
+
+    raw = upload.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return jsonify({"success": False, "message": "File too large (max 8MB)."}), 400
+
+    from io import BytesIO
+    try:
+        probe = Image.open(BytesIO(raw))
+        probe.verify()
+        image = Image.open(BytesIO(raw))
+        image.load()
+    except (UnidentifiedImageError, OSError):
+        return jsonify({"success": False, "message": "File is not a valid image."}), 400
+
+    # Phone cameras store orientation in EXIF and keep the pixels un-rotated.
+    # We re-encode to JPEG and drop EXIF, so bake the rotation into the pixels
+    # first — otherwise portrait photos display sideways.
+    image = ImageOps.exif_transpose(image)
+
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+
+    max_dim = UPLOAD_MAX_DIMENSIONS[kind]
+    image.thumbnail((max_dim, max_dim), Image.LANCZOS)
+
+    filename = f"{uuid.uuid4().hex}.jpg"
+    upload_dir = os.path.join(PROJECT_ROOT, "frontend", "static", "uploads", kind)
+    os.makedirs(upload_dir, exist_ok=True)
+    image.save(os.path.join(upload_dir, filename), format="JPEG", quality=85, optimize=True)
+
+    return jsonify({"success": True, "url": f"/static/uploads/{kind}/{filename}"}), 201
 
 
 @app.route("/api/traffic/page-view", methods=["POST"])
@@ -2575,285 +3045,998 @@ def resolve_ab_tests():
     return res
 
 
+def _ab_test_dict(test):
+    return {
+        "id": test.id,
+        "test_key": test.test_key,
+        "label": test.label,
+        "enabled": bool(test.enabled),
+        "allocation_b": int(test.allocation_b or 0),
+        "variant_a": test.variant_a,
+        "variant_b": test.variant_b,
+        "updated_at": test.updated_at.isoformat() if test.updated_at else None,
+    }
+
+
+@app.route("/api/admin/ab-tests")
+@api_admin_required
+def api_admin_ab_tests():
+    """JSON list of A/B configs for the React studio. Editing stays gated behind
+    the same 'admin_control' capability the classic panel uses, surfaced as
+    `can_edit` so the UI can render read-only for non-superadmins."""
+    tests = ABTestConfig.query.order_by(ABTestConfig.id.asc()).all()
+    return jsonify({
+        "can_edit": has_admin_capability("admin_control"),
+        "tests": [_ab_test_dict(t) for t in tests],
+    })
+
+
+@app.route("/api/admin/ab-tests/<int:test_id>", methods=["PUT"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["PUT"])
+def api_admin_ab_test_update(test_id):
+    if not has_admin_capability("admin_control"):
+        return jsonify({"success": False, "message": "Insufficient permission for this action."}), 403
+
+    test = ABTestConfig.query.get(test_id)
+    if not test:
+        return jsonify({"success": False, "message": "A/B test not found."}), 404
+
+    data = request_payload()
+    variant_a = str(data.get("variant_a", test.variant_a) or "").strip()
+    variant_b = str(data.get("variant_b", test.variant_b) or "").strip()
+    if not variant_a or not variant_b:
+        return jsonify({"success": False, "message": "Both variants must have text."}), 400
+
+    try:
+        allocation = int(data.get("allocation_b", test.allocation_b))
+    except (TypeError, ValueError):
+        allocation = test.allocation_b
+
+    test.enabled = bool(data.get("enabled", test.enabled))
+    test.allocation_b = max(0, min(100, allocation))
+    test.variant_a = variant_a[:300]
+    test.variant_b = variant_b[:300]
+    test.updated_at = datetime.utcnow()
+    db.session.commit()
+
+    log_superadmin_action(
+        action='AB_TEST_UPDATED',
+        target=test.test_key,
+        details=f'enabled={test.enabled},allocation_b={test.allocation_b}',
+        actor=current_user(),
+    )
+    return jsonify({"success": True, "test": _ab_test_dict(test)})
+
+
+# ─── API — Admin workflow (tasks / finance / approvals) ───────────────────────
+# JSON mirrors of the classic panel's form-post workflow routes, for the React
+# studio. Business rules (capabilities, lane ownership, allowed statuses) are
+# kept identical to the originals so both surfaces behave the same.
+
+def _capability_denied():
+    return jsonify({"success": False, "message": "Insufficient permission for this action."}), 403
+
+
+def _admin_task_dict(task):
+    return {
+        "id": task.id,
+        "title": task.title,
+        "details": task.details,
+        "assigned_to_email": task.assigned_to_email,
+        "assigned_by_email": task.assigned_by_email,
+        "status": task.status,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+    }
+
+
+@app.route("/api/admin/tasks")
+@api_admin_required
+def api_admin_tasks():
+    actor = current_user()
+    actor_email = normalize_email(getattr(actor, "email", ""))
+    is_super = is_super_admin(actor)
+
+    query = AdminTask.query
+    if not is_super:
+        # Non-superadmins only see tasks assigned to them.
+        query = query.filter(db.func.lower(AdminTask.assigned_to_email) == actor_email)
+    tasks = query.order_by(AdminTask.created_at.desc()).all()
+
+    assignable = []
+    if is_super:
+        assignable = [
+            normalize_email(u.email)
+            for u in User.query.filter(
+                db.func.lower(User.role) == "admin", User.is_active.is_(True)
+            ).order_by(User.email.asc()).all()
+        ]
+
+    return jsonify({
+        "can_assign": is_super,
+        "my_email": actor_email,
+        "assignable_admins": assignable,
+        "tasks": [_admin_task_dict(t) for t in tasks],
+    })
+
+
+@app.route("/api/admin/tasks", methods=["POST"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["POST"])
+def api_admin_tasks_create():
+    creator = current_user()
+    if not is_super_admin(creator):
+        return _capability_denied()
+
+    data = request_payload()
+    title = str(data.get("title", "")).strip()
+    details = str(data.get("details", "")).strip()
+    assigned_to_email = normalize_email(data.get("assigned_to_email", ""))
+
+    if len(title) < 3 or len(title) > 160:
+        return jsonify({"success": False, "message": "Task title must be between 3 and 160 characters."}), 400
+    if not validate_email(assigned_to_email):
+        return jsonify({"success": False, "message": "Please choose a valid admin email."}), 400
+
+    assignee = User.query.filter(
+        db.func.lower(User.email) == assigned_to_email,
+        User.role == "admin",
+        User.is_active.is_(True),
+    ).first()
+    if not assignee:
+        return jsonify({"success": False, "message": "Selected email is not an active admin account."}), 400
+
+    task = AdminTask(
+        title=title,
+        details=details,
+        assigned_to_email=assigned_to_email,
+        assigned_by_email=normalize_email(getattr(creator, "email", "")),
+        status="Pending",
+    )
+    db.session.add(task)
+    log_superadmin_action(
+        action="TASK_ASSIGNED",
+        target=assigned_to_email,
+        details=f"title={title}",
+        actor=creator,
+    )
+    db.session.commit()
+
+    # Best-effort notification, exactly like the classic route: a mail failure
+    # must never fail the assignment itself.
+    email_sent = True
+    try:
+        _send_task_assigned_email(
+            assigned_to_email, title, details, normalize_email(getattr(creator, "email", ""))
+        )
+    except Exception:
+        email_sent = False
+        app.logger.exception("Failed to send task assignment email")
+
+    return jsonify({"success": True, "task": _admin_task_dict(task), "email_sent": email_sent}), 201
+
+
+@app.route("/api/admin/tasks/<int:task_id>/status", methods=["PUT"])
+@api_admin_required
+@limiter.limit("240 per hour", methods=["PUT"])
+def api_admin_task_status(task_id):
+    actor = current_user()
+    actor_email = normalize_email(getattr(actor, "email", ""))
+    data = request_payload()
+    next_status = str(data.get("status", "")).strip()
+
+    if next_status not in {"Pending", "In Progress", "Done"}:
+        return jsonify({"success": False, "message": "Invalid task status selected."}), 400
+
+    task = AdminTask.query.get(task_id)
+    if not task:
+        return jsonify({"success": False, "message": "Task not found."}), 404
+
+    if normalize_email(task.assigned_to_email) != actor_email and not is_super_admin(actor):
+        return jsonify({
+            "success": False,
+            "message": "You can only update tasks assigned to your admin account.",
+        }), 403
+
+    task.status = next_status
+    task.updated_at = datetime.utcnow()
+    if is_super_admin(actor):
+        log_superadmin_action(
+            action="TASK_STATUS_UPDATED",
+            target=normalize_email(task.assigned_to_email),
+            details=f"task_id={task.id},status={next_status}",
+            actor=actor,
+        )
+    db.session.commit()
+    return jsonify({"success": True, "task": _admin_task_dict(task)})
+
+
+@app.route("/api/admin/tasks/<int:task_id>", methods=["DELETE"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["DELETE"])
+def api_admin_task_delete(task_id):
+    actor = current_user()
+    if not is_super_admin(actor):
+        return _capability_denied()
+
+    task = AdminTask.query.get(task_id)
+    if not task:
+        return jsonify({"success": False, "message": "Task not found."}), 404
+
+    log_superadmin_action(
+        action="TASK_DELETED",
+        target=normalize_email(task.assigned_to_email),
+        details=f"task_id={task.id}",
+        actor=actor,
+    )
+    db.session.delete(task)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+def _finance_entry_dict(entry):
+    return {
+        "id": entry.id,
+        "entry_type": entry.entry_type,
+        "title": entry.title,
+        "counterparty": entry.counterparty,
+        "amount": entry.amount,
+        "due_date": entry.due_date,
+        "notes": entry.notes,
+        "status": entry.status,
+        "assigned_admin_email": entry.assigned_admin_email,
+        "created_by_email": entry.created_by_email,
+        "reviewed_by_email": entry.reviewed_by_email,
+        "review_note": entry.review_note,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
+    }
+
+
+@app.route("/api/admin/finance")
+@api_admin_required
+def api_admin_finance():
+    actor = current_user()
+    if not has_admin_capability("finance_ops", actor):
+        return _capability_denied()
+
+    entries = FinanceEntry.query.order_by(FinanceEntry.created_at.desc()).all()
+    return jsonify({
+        "can_review": is_super_admin(actor),
+        "my_email": normalize_email(getattr(actor, "email", "")),
+        "slots": get_finance_admin_slots(),
+        "entries": [_finance_entry_dict(e) for e in entries],
+    })
+
+
+@app.route("/api/admin/finance", methods=["POST"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["POST"])
+def api_admin_finance_create():
+    actor = current_user()
+    if not has_admin_capability("finance_ops", actor):
+        return _capability_denied()
+
+    actor_email = normalize_email(getattr(actor, "email", ""))
+    data = request_payload()
+    entry_type = normalize_finance_entry_type(data.get("entry_type", "receivable"))
+    title = str(data.get("title", "")).strip()
+    counterparty = str(data.get("counterparty", "")).strip()
+    due_date = str(data.get("due_date", "")).strip()
+    notes = str(data.get("notes", "")).strip()
+
+    try:
+        amount = int(float(data.get("amount", 0) or 0))
+    except (TypeError, ValueError):
+        amount = 0
+
+    if len(title) < 3:
+        return jsonify({"success": False, "message": "Finance title must be at least 3 characters."}), 400
+    if len(counterparty) < 2:
+        return jsonify({"success": False, "message": "Counterparty is required."}), 400
+    if amount <= 0:
+        return jsonify({"success": False, "message": "Amount must be greater than 0."}), 400
+
+    assigned_email = assign_finance_admin_email(entry_type)
+    if not assigned_email:
+        return jsonify({
+            "success": False,
+            "message": "Assign two active finance admins first (scope=finance).",
+        }), 400
+
+    if not is_super_admin(actor) and actor_email != assigned_email:
+        return jsonify({"success": False, "message": "This lane is assigned to the other finance admin."}), 403
+
+    entry = FinanceEntry(
+        entry_type=entry_type,
+        title=title,
+        counterparty=counterparty,
+        amount=amount,
+        due_date=due_date,
+        notes=notes,
+        status="submitted",
+        assigned_admin_email=assigned_email,
+        created_by_email=actor_email,
+    )
+    db.session.add(entry)
+    db.session.commit()
+    return jsonify({"success": True, "entry": _finance_entry_dict(entry)}), 201
+
+
+@app.route("/api/admin/finance/<int:entry_id>/status", methods=["PUT"])
+@api_admin_required
+@limiter.limit("240 per hour", methods=["PUT"])
+def api_admin_finance_status(entry_id):
+    actor = current_user()
+    if not has_admin_capability("finance_ops", actor):
+        return _capability_denied()
+
+    actor_email = normalize_email(getattr(actor, "email", ""))
+    entry = FinanceEntry.query.get(entry_id)
+    if not entry:
+        return jsonify({"success": False, "message": "Finance entry not found."}), 404
+
+    requested = str(request_payload().get("status", "")).strip().lower()
+    if requested not in {"submitted", "processed", "needs_superadmin_check", "closed"}:
+        return jsonify({"success": False, "message": "Invalid finance status."}), 400
+
+    if not is_super_admin(actor) and actor_email != normalize_email(entry.assigned_admin_email):
+        return jsonify({
+            "success": False,
+            "message": "You can update only your assigned finance items.",
+        }), 403
+
+    entry.status = requested
+    if requested == "needs_superadmin_check":
+        entry.reviewed_by_email = None
+        entry.review_note = None
+    db.session.commit()
+    return jsonify({"success": True, "entry": _finance_entry_dict(entry)})
+
+
+@app.route("/api/admin/finance/<int:entry_id>/review", methods=["PUT"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["PUT"])
+def api_admin_finance_review(entry_id):
+    reviewer = current_user()
+    if not is_super_admin(reviewer):
+        return _capability_denied()
+
+    entry = FinanceEntry.query.get(entry_id)
+    if not entry:
+        return jsonify({"success": False, "message": "Finance entry not found."}), 404
+
+    data = request_payload()
+    decision = str(data.get("decision", "")).strip().lower()
+    note = str(data.get("review_note", "")).strip()
+
+    if entry.status != "needs_superadmin_check":
+        return jsonify({
+            "success": False,
+            "message": "This finance entry is not in the superadmin check queue.",
+        }), 400
+    if decision not in {"approve", "reject"}:
+        return jsonify({"success": False, "message": "Invalid review decision."}), 400
+
+    entry.reviewed_by_email = normalize_email(getattr(reviewer, "email", ""))
+    entry.review_note = note[:300] if note else ""
+    entry.status = "closed" if decision == "approve" else "rejected"
+    db.session.commit()
+
+    log_superadmin_action(
+        action="FINANCE_ENTRY_REVIEWED",
+        target=f"finance_entry:{entry.id}",
+        details=f"decision={decision},type={entry.entry_type},amount={entry.amount}",
+        actor=reviewer,
+    )
+    return jsonify({"success": True, "entry": _finance_entry_dict(entry)})
+
+
+def _approval_ticket_dict(ticket):
+    return {
+        "id": ticket.id,
+        "action_key": ticket.action_key,
+        "payload_json": ticket.payload_json,
+        "requested_by_email": ticket.requested_by_email,
+        "requested_by_scope": ticket.requested_by_scope,
+        "reason": ticket.reason,
+        "status": ticket.status,
+        "reviewed_by_email": ticket.reviewed_by_email,
+        "review_note": ticket.review_note,
+        "reviewed_at": ticket.reviewed_at.isoformat() if ticket.reviewed_at else None,
+        "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
+    }
+
+
+@app.route("/api/admin/approvals")
+@api_admin_required
+def api_admin_approvals():
+    actor = current_user()
+    tickets = ApprovalTicket.query.order_by(ApprovalTicket.created_at.desc()).all()
+    return jsonify({
+        "can_review": has_admin_capability("admin_control", actor),
+        "tickets": [_approval_ticket_dict(t) for t in tickets],
+    })
+
+
+@app.route("/api/admin/approvals/<int:ticket_id>/<decision>", methods=["POST"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["POST"])
+def api_admin_approval_decide(ticket_id, decision):
+    reviewer = current_user()
+    if not has_admin_capability("admin_control", reviewer):
+        return _capability_denied()
+    if decision not in {"approve", "reject"}:
+        return jsonify({"success": False, "message": "Invalid decision."}), 400
+
+    ticket = ApprovalTicket.query.get(ticket_id)
+    if not ticket:
+        return jsonify({"success": False, "message": "Ticket not found."}), 404
+    if ticket.status != "pending":
+        return jsonify({"success": False, "message": "Ticket already reviewed."}), 400
+
+    reviewer_email = normalize_email(getattr(reviewer, "email", ""))
+    note = str(request_payload().get("review_note", "")).strip()
+
+    if decision == "approve":
+        try:
+            result_note = _execute_approval_ticket(ticket)
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.exception("Approval execution failed for ticket %s", ticket_id)
+            return jsonify({"success": False, "message": f"Approval failed: {exc}"}), 400
+        ticket.status = "approved"
+        ticket.review_note = (result_note or "")[:300]
+    else:
+        ticket.status = "rejected"
+        ticket.review_note = note[:300] if note else "Rejected by superadmin."
+
+    ticket.reviewed_by_email = reviewer_email
+    ticket.reviewed_at = datetime.utcnow()
+    db.session.commit()
+
+    log_superadmin_action(
+        action="APPROVAL_APPROVED" if decision == "approve" else "APPROVAL_REJECTED",
+        target=f"ticket:{ticket.id}",
+        details=f"action={ticket.action_key}",
+        actor=reviewer,
+    )
+    return jsonify({"success": True, "ticket": _approval_ticket_dict(ticket)})
+
+
+# ─── API — Admin leads (ProjectRequest management) ────────────────────────────
+# The core admin surface, ported from the classic panel. Unlike the customer
+# dashboard, this IS the admin view, so lead-scoring and internal_notes ARE
+# returned here. Sensitive actions by non-superadmins still queue approval
+# tickets, exactly like the classic form routes (same helpers reused).
+
+def _lead_dict(req):
+    return {
+        "id": req.id,
+        "name": req.name,
+        "email": req.email,
+        "phone": req.phone,
+        "service": req.service,
+        "deadline": req.deadline,
+        "message": req.message,
+        "status": req.status,
+        "priority": req.priority,
+        "value": req.value or 0,
+        "is_new_update": bool(req.is_new_update),
+        "internal_notes": req.internal_notes,
+        "lead_score_total": req.lead_score_total,
+        "lead_score_value": req.lead_score_value,
+        "lead_score_urgency": req.lead_score_urgency,
+        "lead_score_conversion": req.lead_score_conversion,
+        "lead_tier": req.lead_tier,
+        "stale_flag": bool(req.stale_flag),
+        "escalation_level": int(req.escalation_level or 0),
+        "created_at": req.created_at.isoformat() if req.created_at else None,
+    }
+
+
+@app.route("/api/admin/leads")
+@api_admin_required
+def api_admin_leads():
+    if not has_admin_capability("lead_manage"):
+        return _capability_denied()
+
+    rows = ProjectRequest.query.order_by(ProjectRequest.created_at.desc()).all()
+    # Same freshness maintenance the classic admin panel performs on load.
+    _apply_stale_followup_policy(rows)
+    scores_updated = False
+    for row in rows:
+        if row.lead_last_scored_at is None:
+            _score_project_request(row)
+            scores_updated = True
+    if scores_updated:
+        db.session.commit()
+
+    total = len(rows)
+    summary = {
+        "total": total,
+        "new": sum(1 for r in rows if r.status == "New"),
+        "in_progress": sum(1 for r in rows if r.status == "In Progress"),
+        "done": sum(1 for r in rows if r.status == "Done"),
+        "total_value": sum((r.value or 0) for r in rows),
+        "updates": sum(1 for r in rows if r.is_new_update),
+    }
+    return jsonify({
+        "can_manage": has_admin_capability("lead_manage"),
+        "is_super": is_super_admin(),
+        "summary": summary,
+        "leads": [_lead_dict(r) for r in rows],
+    })
+
+
+@app.route("/api/admin/leads/<int:req_id>", methods=["PUT"])
+@api_admin_required
+@limiter.limit("240 per hour", methods=["PUT"])
+def api_admin_lead_update(req_id):
+    actor = current_user()
+    if not has_admin_capability("lead_manage"):
+        return _capability_denied()
+
+    req = ProjectRequest.query.get(req_id)
+    if not req:
+        return jsonify({"success": False, "message": "Inquiry not found."}), 404
+
+    data = request_payload()
+    status = data.get("status", req.status)
+    priority = data.get("priority", req.priority)
+    try:
+        value = int(data.get("value", req.value) or 0)
+    except (TypeError, ValueError):
+        value = req.value or 0
+    message = data.get("message", None)
+
+    requires_approval = (not is_super_admin(actor)) and (
+        str(status or "").strip().lower() == "done"
+        or str(priority or "").strip().lower() == "high"
+        or int(value or 0) >= 20000
+    )
+    if requires_approval:
+        ticket = _queue_approval_ticket(
+            action_key="project_update",
+            payload={
+                "req_id": int(req.id),
+                "status": str(status or "").strip(),
+                "priority": str(priority or "").strip(),
+                "value": int(value or 0),
+                "message": message,
+            },
+            actor=actor,
+            reason=f"Sensitive update for inquiry #{req.id:04d}",
+        )
+        db.session.commit()
+        return jsonify({
+            "success": True,
+            "queued": True,
+            "ticket_id": ticket.id,
+            "message": f"Update queued for superadmin approval (ticket #{ticket.id}).",
+        })
+
+    _apply_project_update_values(req, status, priority, value, message)
+    if "internal_notes" in data:
+        req.internal_notes = str(data.get("internal_notes") or "").strip() or None
+    db.session.commit()
+    return jsonify({"success": True, "lead": _lead_dict(req)})
+
+
+@app.route("/api/admin/leads/bulk", methods=["POST"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["POST"])
+def api_admin_leads_bulk():
+    actor = current_user()
+    if not has_admin_capability("lead_manage"):
+        return _capability_denied()
+
+    data = request_payload()
+    ids = data.get("ids", [])
+    action = str(data.get("action", "")).strip().lower()
+    if isinstance(ids, str):
+        ids = [x.strip() for x in ids.split(",") if x.strip()]
+    try:
+        parsed_ids = [int(x) for x in ids]
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid request ids."}), 400
+    if not parsed_ids:
+        return jsonify({"success": False, "message": "Select at least one inquiry."}), 400
+
+    rows = ProjectRequest.query.filter(ProjectRequest.id.in_(parsed_ids)).all()
+    if not rows:
+        return jsonify({"success": False, "message": "No matching inquiries found."}), 404
+
+    requires_approval = (not is_super_admin(actor)) and action in {"delete", "mark_done", "priority_high"}
+    if requires_approval:
+        ticket = _queue_approval_ticket(
+            action_key="bulk_action",
+            payload={"action": action, "ids": parsed_ids},
+            actor=actor,
+            reason=f"Bulk action {action} on {len(parsed_ids)} inquiries",
+        )
+        db.session.commit()
+        return jsonify({
+            "success": True,
+            "queued": True,
+            "ticket_id": ticket.id,
+            "message": f"Bulk action queued for superadmin approval (ticket #{ticket.id}).",
+        })
+
+    try:
+        _apply_bulk_action_rows(rows, action)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Bulk admin action failed")
+        return jsonify({"success": False, "message": "Bulk action failed. Try again."}), 500
+
+    return jsonify({"success": True, "count": len(rows)})
+
+
+@app.route("/api/admin/leads/<int:req_id>", methods=["DELETE"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["DELETE"])
+def api_admin_lead_delete(req_id):
+    actor = current_user()
+    if not has_admin_capability("lead_manage"):
+        return _capability_denied()
+
+    if not is_super_admin(actor):
+        ticket = _queue_approval_ticket(
+            action_key="project_delete",
+            payload={"req_id": int(req_id)},
+            actor=actor,
+            reason=f"Delete inquiry #{req_id:04d}",
+        )
+        db.session.commit()
+        return jsonify({
+            "success": True,
+            "queued": True,
+            "ticket_id": ticket.id,
+            "message": f"Delete request queued for superadmin approval (ticket #{ticket.id}).",
+        })
+
+    req = ProjectRequest.query.get(req_id)
+    if not req:
+        return jsonify({"success": False, "message": "Inquiry not found."}), 404
+    db.session.delete(req)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+# ─── API — Superadmin: admin management ───────────────────────────────────────
+
+def _admin_user_dict(u):
+    return {
+        "id": u.id,
+        "name": u.name,
+        "email": u.email,
+        "admin_scope": u.admin_scope or "ops",
+        "is_active": bool(u.is_active),
+        "is_super": normalize_email(u.email) == normalize_email(SUPERADMIN_EMAIL),
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+    }
+
+
+@app.route("/api/admin/admins")
+@api_admin_required
+def api_admin_admins():
+    if not is_super_admin():
+        return jsonify({"can_manage": False, "scopes": [], "admins": []})
+
+    admins = User.query.filter(db.func.lower(User.role) == "admin").order_by(User.created_at.asc()).all()
+    return jsonify({
+        "can_manage": True,
+        "scopes": ["ops", "finance", "support", "superadmin"],
+        "admins": [_admin_user_dict(u) for u in admins],
+    })
+
+
+@app.route("/api/admin/admins", methods=["POST"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_admins_create():
+    actor = current_user()
+    if not is_super_admin(actor):
+        return _capability_denied()
+
+    data = request_payload()
+    name = str(data.get("name", "")).strip()
+    email = normalize_email(data.get("email", ""))
+    password = str(data.get("password", "")).strip()
+    admin_scope = normalize_admin_scope(data.get("admin_scope", "ops"))
+
+    if len(name) < 2:
+        return jsonify({"success": False, "message": "Name must be at least 2 characters."}), 400
+    if not validate_email(email):
+        return jsonify({"success": False, "message": "Please enter a valid email address."}), 400
+    if len(password) < 6:
+        return jsonify({"success": False, "message": "Password must be at least 6 characters."}), 400
+    if User.query.filter(db.func.lower(User.email) == email).first():
+        return jsonify({"success": False, "message": "An account with this email already exists."}), 409
+
+    user = User(name=name, email=email, role="admin", admin_scope=admin_scope, is_active=True)
+    user.set_password(password)
+    db.session.add(user)
+    db.session.flush()
+    upsert_admin_credential_record(
+        admin_user_id=user.id, admin_email=email, temporary_password="", permanent_password=password
+    )
+    log_superadmin_action(action="ADMIN_CREATED", target=email, details=f"name={name}", actor=actor)
+    db.session.commit()
+    return jsonify({"success": True, "admin": _admin_user_dict(user)}), 201
+
+
+@app.route("/api/admin/admins/<int:uid>", methods=["PUT"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["PUT"])
+def api_admin_admins_update(uid):
+    actor = current_user()
+    if not is_super_admin(actor):
+        return _capability_denied()
+
+    target = User.query.get(uid)
+    if not target or target.role != "admin":
+        return jsonify({"success": False, "message": "Selected account is not an admin."}), 404
+
+    data = request_payload()
+    if "name" in data:
+        name = str(data.get("name", "")).strip()
+        if len(name) < 2:
+            return jsonify({"success": False, "message": "Name must be at least 2 characters."}), 400
+        target.name = name
+    if "email" in data:
+        email = normalize_email(data.get("email", ""))
+        if not validate_email(email):
+            return jsonify({"success": False, "message": "Please enter a valid email address."}), 400
+        clash = User.query.filter(db.func.lower(User.email) == email, User.id != target.id).first()
+        if clash:
+            return jsonify({"success": False, "message": "Another account already uses this email."}), 409
+        target.email = email
+    if "admin_scope" in data:
+        target.admin_scope = normalize_admin_scope(data.get("admin_scope", "ops"))
+    if "is_active" in data:
+        target.is_active = bool(data.get("is_active"))
+    if data.get("password"):
+        new_password = str(data.get("password")).strip()
+        if len(new_password) < 6:
+            return jsonify({"success": False, "message": "Password must be at least 6 characters."}), 400
+        target.set_password(new_password)
+
+    log_superadmin_action(action="ADMIN_UPDATED", target=normalize_email(target.email),
+                          details=f"uid={target.id}", actor=actor)
+    db.session.commit()
+    return jsonify({"success": True, "admin": _admin_user_dict(target)})
+
+
+@app.route("/api/admin/admins/<int:uid>", methods=["DELETE"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["DELETE"])
+def api_admin_admins_delete(uid):
+    actor = current_user()
+    if not is_super_admin(actor):
+        return _capability_denied()
+
+    target = User.query.get(uid)
+    if not target or target.role != "admin":
+        return jsonify({"success": False, "message": "Selected account is not an admin."}), 404
+    target_email = normalize_email(target.email)
+    if target_email == normalize_email(SUPERADMIN_EMAIL):
+        return jsonify({"success": False, "message": "Superadmin account cannot be deleted."}), 400
+
+    AdminTask.query.filter(
+        (db.func.lower(AdminTask.assigned_to_email) == target_email)
+        | (db.func.lower(AdminTask.assigned_by_email) == target_email)
+    ).delete(synchronize_session=False)
+    AdminCredentialRecord.query.filter(
+        db.func.lower(AdminCredentialRecord.admin_email) == target_email
+    ).delete(synchronize_session=False)
+    log_superadmin_action(action="ADMIN_DELETED", target=target_email, details=f"uid={target.id}", actor=actor)
+    db.session.delete(target)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+@app.route("/api/admin/admins/<int:uid>/reset-password", methods=["POST"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_admins_reset_password(uid):
+    actor = current_user()
+    if not is_super_admin(actor):
+        return _capability_denied()
+
+    target = User.query.get(uid)
+    if not target or target.role != "admin":
+        return jsonify({"success": False, "message": "Selected account is not an admin."}), 404
+
+    temp_password = os.urandom(6).hex()
+    target.set_password(temp_password)
+    target_email = normalize_email(target.email)
+    existing = AdminCredentialRecord.query.filter(
+        db.func.lower(AdminCredentialRecord.admin_email) == target_email
+    ).first()
+    permanent_password = existing.permanent_password if existing else temp_password
+    upsert_admin_credential_record(
+        admin_user_id=target.id, admin_email=target_email,
+        temporary_password=temp_password, permanent_password=permanent_password,
+    )
+    log_superadmin_action(action="ADMIN_PASSWORD_RESET", target=target_email,
+                          details=f"uid={target.id}", actor=actor)
+    db.session.commit()
+    # Temp password returned once so the superadmin can hand it over.
+    return jsonify({"success": True, "temporary_password": temp_password})
+
+
+# ─── API — Device sessions ────────────────────────────────────────────────────
+
+@app.route("/api/admin/sessions")
+@api_admin_required
+def api_admin_sessions():
+    actor = current_user()
+    is_super = is_super_admin(actor)
+    current_token = str(session.get("session_token") or "").strip()
+
+    q = db.session.query(UserSession, User).join(User, User.id == UserSession.user_id).filter(
+        UserSession.is_active.is_(True)
+    )
+    if not is_super:
+        q = q.filter(UserSession.user_id == actor.id)
+    rows = q.order_by(UserSession.last_seen.desc()).all()
+
+    sessions_out = [{
+        "id": s.id,
+        "user_id": s.user_id,
+        "user_name": u.name,
+        "user_email": u.email,
+        "ip_address": s.ip_address,
+        "user_agent": s.user_agent,
+        "last_seen": s.last_seen.strftime("%Y-%m-%d %H:%M:%S") if s.last_seen else None,
+        "is_current": bool(current_token) and s.session_token == current_token,
+    } for s, u in rows]
+
+    return jsonify({"is_super": is_super, "sessions": sessions_out})
+
+
+@app.route("/api/admin/sessions/<int:session_id>/revoke", methods=["POST"])
+@api_admin_required
+@limiter.limit("120 per hour", methods=["POST"])
+def api_admin_session_revoke(session_id):
+    actor = current_user()
+    target = UserSession.query.get(session_id)
+    if not target:
+        return jsonify({"success": False, "message": "Session not found."}), 404
+    if not (is_super_admin(actor) or target.user_id == getattr(actor, "id", None)):
+        return jsonify({"success": False, "message": "You can only revoke your own sessions."}), 403
+
+    target.is_active = False
+    target.last_seen = datetime.utcnow()
+    db.session.commit()
+    if is_super_admin(actor):
+        log_superadmin_action(action="SESSION_REVOKED", target=str(target.user_id),
+                              details=f"session_id={target.id}", actor=actor)
+
+    revoked_self = str(session.get("session_token") or "") == str(target.session_token or "")
+    if revoked_self:
+        session.clear()
+    return jsonify({"success": True, "revoked_self": revoked_self})
+
+
+@app.route("/api/admin/sessions/revoke-others", methods=["POST"])
+@api_admin_required
+@limiter.limit("60 per hour", methods=["POST"])
+def api_admin_sessions_revoke_others():
+    actor = current_user()
+    current_token = str(session.get("session_token") or "").strip()
+    q = UserSession.query.filter(UserSession.user_id == actor.id, UserSession.is_active.is_(True))
+    if current_token:
+        q = q.filter(UserSession.session_token != current_token)
+    revoked = q.update({"is_active": False, "last_seen": datetime.utcnow()}, synchronize_session=False)
+    db.session.commit()
+    return jsonify({"success": True, "revoked": int(revoked)})
+
+
+# ─── API — DB backup / restore (admin_control) ────────────────────────────────
+
+@app.route("/api/admin/db-backups")
+@api_admin_required
+def api_admin_db_backups():
+    if not has_admin_capability("admin_control"):
+        return _capability_denied()
+
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    files = []
+    for name in sorted(os.listdir(BACKUP_DIR), reverse=True):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(BACKUP_DIR, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        files.append({
+            "filename": name,
+            "size_bytes": stat.st_size,
+            "modified": datetime.utcfromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    return jsonify({"backups": files})
+
+
+@app.route("/api/admin/db-backups", methods=["POST"])
+@api_admin_required
+@limiter.limit("30 per hour", methods=["POST"])
+def api_admin_db_backup_create():
+    actor = current_user()
+    if not has_admin_capability("admin_control"):
+        return _capability_denied()
+
+    actor_email = normalize_email(getattr(actor, "email", ""))
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    file_name = f"unitaryx_backup_{stamp}.json"
+    payload = _build_backup_payload(actor_email)
+    with open(os.path.join(BACKUP_DIR, file_name), "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, ensure_ascii=True, indent=2)
+
+    log_superadmin_action(action="DB_BACKUP_CREATED", target=file_name,
+                          details=f"rows={payload.get('row_count', 0)}", actor=actor)
+    return jsonify({"success": True, "filename": file_name, "row_count": payload.get("row_count", 0)}), 201
+
+
+@app.route("/api/admin/db-backups/restore", methods=["POST"])
+@api_admin_required
+@limiter.limit("20 per hour", methods=["POST"])
+def api_admin_db_backup_restore():
+    actor = current_user()
+    if not has_admin_capability("admin_control"):
+        return _capability_denied()
+
+    data = request_payload()
+    file_name = _safe_backup_filename(data.get("backup_file", ""))
+    confirmation = str(data.get("confirm_restore", "")).strip().upper()
+
+    if confirmation != "RESTORE":
+        return jsonify({"success": False, "message": "Type RESTORE to confirm."}), 400
+    if not file_name:
+        return jsonify({"success": False, "message": "Please choose a valid backup file."}), 400
+    full_path = os.path.join(BACKUP_DIR, file_name)
+    if not os.path.isfile(full_path):
+        return jsonify({"success": False, "message": "Backup file not found."}), 404
+
+    try:
+        with open(full_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        _restore_backup_payload(payload)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception("Restore failed for backup %s", file_name)
+        return jsonify({"success": False, "message": f"Restore failed: {exc}"}), 400
+
+    log_superadmin_action(action="DB_BACKUP_RESTORED", target=file_name,
+                          details=f"by={normalize_email(getattr(actor, 'email', ''))}", actor=actor)
+    return jsonify({"success": True, "filename": file_name})
+
+
 # ─── Admin Routes ─────────────────────────────────────────────────────────────
+
+@app.route("/admin/studio")
+@admin_required
+def admin_studio():
+    # React admin studio (Founders & Projects management). Served as the SPA
+    # shell, gated by @admin_required. The classic Jinja /admin panel below stays
+    # in place until its remaining features are ported in later phases.
+    return send_from_directory(DIST_DIR, "index.html")
+
 
 @app.route("/admin")
 @admin_required
 def admin_panel():
-    requests_list = ProjectRequest.query.order_by(
-        ProjectRequest.created_at.desc()
-    ).all()
-
-    followup_summary = _apply_stale_followup_policy(requests_list)
-
-    scores_updated = False
-    for row in requests_list:
-        if row.lead_last_scored_at is None:
-            _score_project_request(row)
-            scores_updated = True
-    if scores_updated or followup_summary.get("changed"):
-        db.session.commit()
-
-    requests_list = sorted(
-        requests_list,
-        key=lambda r: ((r.lead_score_total or 0), (r.created_at or datetime.min)),
-        reverse=True,
-    )
-    
-    # Calculate more advanced stats
-    total_req = len(requests_list)
-    pending_req = sum(1 for r in requests_list if r.status != 'Done')
-    done_req = sum(1 for r in requests_list if r.status == 'Done')
-    
-    total_value = sum((r.value or 0) for r in requests_list)
-    avg_value = int(total_value / total_req) if total_req else 0
-    completion_rate = round((done_req / total_req) * 100, 1) if total_req else 0.0
-    high_priority_count = sum(1 for r in requests_list if (r.priority or "").lower() == "high")
-    today_utc = datetime.utcnow().date()
-    todays_inquiries = sum(1 for r in requests_list if r.created_at and r.created_at.date() == today_utc)
-
-    now_utc = datetime.utcnow()
-    five_minutes_ago = now_utc - timedelta(minutes=5)
-    today_start = datetime.combine(now_utc.date(), datetime.min.time())
-    active_now = db.session.query(db.func.count(db.distinct(SiteTrafficEvent.visitor_id))).filter(
-        SiteTrafficEvent.created_at >= five_minutes_ago
-    ).scalar() or 0
-    today_page_views = SiteTrafficEvent.query.filter(
-        SiteTrafficEvent.event_type == "page_view",
-        SiteTrafficEvent.created_at >= today_start,
-    ).count()
-    today_scrolled = db.session.query(db.func.count(db.distinct(SiteTrafficEvent.visitor_id))).filter(
-        SiteTrafficEvent.event_type == "scroll",
-        SiteTrafficEvent.scroll_percent >= 25,
-        SiteTrafficEvent.created_at >= today_start,
-    ).scalar() or 0
-    traffic_seed = {
-        "active_now": int(active_now),
-        "today_page_views": int(today_page_views),
-        "today_scrolled": int(today_scrolled),
-    }
-    registered_users = User.query.order_by(User.created_at.desc()).all()
-    registered_total = User.query.count()
-    traffic_logs = SiteTrafficEvent.query.order_by(SiteTrafficEvent.created_at.desc()).limit(300).all()
-
-    stats = {
-        'total_requests': ProjectRequest.query.count(),
-        'pending_requests': ProjectRequest.query.filter(ProjectRequest.status != 'Done').count(),
-        'done_requests': ProjectRequest.query.filter_by(status='Done').count(),
-        'projected_revenue': db.session.query(db.func.sum(ProjectRequest.value)).scalar() or 0
-    }
-
-    admin_metrics = {
-        'completion_rate': completion_rate,
-        'high_priority_count': high_priority_count,
-        'avg_value': avg_value,
-        'todays_inquiries': todays_inquiries,
-        'stale_count': int(followup_summary.get("stale_count", 0)),
-        'escalated_count': int(followup_summary.get("escalated_count", 0)),
-    }
-    
-    # Distribution Analysis (Service counts)
-    services = ['Web Development', 'Software Projects', 'Hardware & IoT', 'AI & Machine Learning', 'Mobile Apps', 'Reports & Documentation']
-    dist_data = [ProjectRequest.query.filter_by(service=s).count() for s in services]
-
-    admin_user = current_user()
-    admin_email = (admin_user.email or "").strip().lower() if admin_user else ""
-    my_tasks = AdminTask.query.filter(
-        db.func.lower(AdminTask.assigned_to_email) == admin_email
-    ).order_by(AdminTask.created_at.desc()).all()
-    admin_users = User.query.filter_by(role='admin', is_active=True).order_by(User.email.asc()).all()
-    managed_admins = User.query.filter_by(role='admin').order_by(User.created_at.desc()).all()
-    assignment_feed = AdminTask.query.order_by(AdminTask.created_at.desc()).limit(25).all()
-    all_admin_tasks = AdminTask.query.order_by(AdminTask.created_at.desc()).limit(120).all()
-    admin_task_leaderboard = []
-    superadmin_audit_feed = []
-    superadmin_summary = {}
-    risk_admins = []
-    critical_pending_tasks = []
-    admin_credentials = []
-    admin_password_map = {}
-    my_device_sessions = []
-    fleet_active_sessions = []
-    db_backups = []
-    ab_tests = []
-    pending_approvals = []
-    recent_approvals = []
-    finance_entries_my = []
-    finance_entries_superadmin_queue = []
-    finance_entries_recent = []
-    finance_slots = get_finance_admin_slots()
-    feedback_posts = AdminFeedback.query.order_by(AdminFeedback.created_at.desc()).limit(200).all()
-    superadmin_logged_in_users = []
-    superadmin_live_website_users = []
-    superadmin_total_users = int(registered_total)
-    superadmin_live_website_count = 0
-
-    if is_super_admin(admin_user):
-        now_utc = datetime.utcnow()
-        task_perf = {}
-        pending_count = 0
-        in_progress_count = 0
-        done_count = 0
-        for task in all_admin_tasks:
-            email = (task.assigned_to_email or "").strip().lower()
-            if not email:
-                continue
-            row = task_perf.setdefault(email, {"email": email, "total": 0, "done": 0, "in_progress": 0, "pending": 0})
-            row["total"] += 1
-            status = (task.status or "").strip()
-            if status == "Done":
-                row["done"] += 1
-                done_count += 1
-            elif status == "In Progress":
-                row["in_progress"] += 1
-                in_progress_count += 1
-            else:
-                row["pending"] += 1
-                pending_count += 1
-
-                # Pending tasks older than 2 days are marked as critical queue.
-                if task.created_at and (now_utc - task.created_at).days >= 2:
-                    critical_pending_tasks.append(task)
-
-        admin_task_leaderboard = sorted(
-            task_perf.values(),
-            key=lambda x: (x["done"], x["in_progress"], x["total"]),
-            reverse=True,
-        )[:12]
-        superadmin_audit_feed = AdminAuditLog.query.order_by(AdminAuditLog.created_at.desc()).limit(40).all()
-
-        total_admin_accounts = len(managed_admins)
-        active_admin_accounts = sum(1 for u in managed_admins if bool(u.is_active))
-        inactive_admin_accounts = max(total_admin_accounts - active_admin_accounts, 0)
-        total_task_count = len(all_admin_tasks)
-        completion_ratio = round((done_count / total_task_count) * 100, 1) if total_task_count else 0.0
-
-        today_actions = sum(
-            1 for ev in superadmin_audit_feed
-            if ev.created_at and ev.created_at.date() == now_utc.date()
-        )
-
-        risk_admins = [
-            row for row in admin_task_leaderboard
-            if row["pending"] > row["done"] + 1
-        ][:6]
-
-        critical_pending_tasks = sorted(
-            critical_pending_tasks,
-            key=lambda t: t.created_at or now_utc,
-        )[:8]
-
-        superadmin_summary = {
-            "total_admin_accounts": total_admin_accounts,
-            "active_admin_accounts": active_admin_accounts,
-            "inactive_admin_accounts": inactive_admin_accounts,
-            "total_task_count": total_task_count,
-            "pending_task_count": pending_count,
-            "in_progress_task_count": in_progress_count,
-            "done_task_count": done_count,
-            "completion_ratio": completion_ratio,
-            "today_actions": today_actions,
-            "critical_pending_count": len(critical_pending_tasks),
-        }
-
-        admin_credentials = AdminCredentialRecord.query.order_by(AdminCredentialRecord.updated_at.desc()).all()
-        admin_password_map = {
-            (rec.admin_email or "").strip().lower(): (rec.permanent_password or "")
-            for rec in admin_credentials
-            if (rec.admin_email or "").strip()
-        }
-
-        fleet_active_sessions = UserSession.query.filter_by(is_active=True).order_by(UserSession.last_seen.desc()).limit(120).all()
-
-    if admin_user:
-        my_device_sessions = UserSession.query.filter_by(user_id=admin_user.id).order_by(UserSession.last_seen.desc()).limit(20).all()
-
-    if is_super_admin(admin_user):
-        db_backups = _list_db_backups()
-        ab_tests = ABTestConfig.query.order_by(ABTestConfig.test_key.asc()).all()
-        pending_approvals = ApprovalTicket.query.filter_by(status='pending').order_by(ApprovalTicket.created_at.desc()).limit(80).all()
-        recent_approvals = ApprovalTicket.query.filter(ApprovalTicket.status != 'pending').order_by(ApprovalTicket.reviewed_at.desc(), ApprovalTicket.created_at.desc()).limit(80).all()
-        finance_entries_superadmin_queue = FinanceEntry.query.filter(
-            FinanceEntry.status == 'needs_superadmin_check'
-        ).order_by(FinanceEntry.updated_at.desc()).limit(120).all()
-        finance_entries_recent = FinanceEntry.query.order_by(FinanceEntry.updated_at.desc()).limit(120).all()
-        login_rows = db.session.query(
-            User.id.label('user_id'),
-            User.name.label('name'),
-            User.email.label('email'),
-            User.role.label('role'),
-            User.admin_scope.label('admin_scope'),
-            db.func.max(UserSession.last_seen).label('last_seen'),
-            db.func.count(UserSession.id).label('session_count'),
-        ).join(
-            UserSession,
-            UserSession.user_id == User.id,
-        ).filter(
-            UserSession.is_active.is_(True),
-        ).group_by(
-            User.id, User.name, User.email, User.role, User.admin_scope,
-        ).order_by(
-            db.func.max(UserSession.last_seen).desc(),
-        ).all()
-
-        superadmin_logged_in_users = [
-            {
-                'user_id': int(row.user_id),
-                'name': row.name or 'Unknown',
-                'email': row.email or '',
-                'role': row.role or 'user',
-                'admin_scope': row.admin_scope or '',
-                'session_count': int(row.session_count or 0),
-                'last_seen': row.last_seen,
-            }
-            for row in login_rows
-        ]
-
-        superadmin_live_website_users, superadmin_live_website_count = _build_live_website_users()
-    elif has_admin_capability('finance_ops', admin_user):
-        finance_entries_my = FinanceEntry.query.filter(
-            db.func.lower(FinanceEntry.assigned_admin_email) == admin_email
-        ).order_by(FinanceEntry.updated_at.desc()).limit(120).all()
-
-    return render_template("admin.html", 
-                           requests=requests_list, 
-                           stats=stats,
-                           admin_metrics=admin_metrics,
-                           traffic_seed=traffic_seed,
-                           registered_users=registered_users,
-                           registered_total=registered_total,
-                           traffic_logs=traffic_logs,
-                           dist_data=dist_data,
-                           admin=admin_user,
-                           is_superadmin=is_super_admin(admin_user),
-                           my_tasks=my_tasks,
-                           admin_users=admin_users,
-                           managed_admins=managed_admins,
-                           assignment_feed=assignment_feed,
-                           all_admin_tasks=all_admin_tasks,
-                           admin_task_leaderboard=admin_task_leaderboard,
-                           superadmin_audit_feed=superadmin_audit_feed,
-                           superadmin_summary=superadmin_summary,
-                           risk_admins=risk_admins,
-                           critical_pending_tasks=critical_pending_tasks,
-                           admin_credentials=admin_credentials,
-                           admin_password_map=admin_password_map,
-                           my_device_sessions=my_device_sessions,
-                           fleet_active_sessions=fleet_active_sessions,
-                           db_backups=db_backups,
-                           ab_tests=ab_tests,
-                           pending_approvals=pending_approvals,
-                           recent_approvals=recent_approvals,
-                           finance_entries_my=finance_entries_my,
-                           finance_entries_superadmin_queue=finance_entries_superadmin_queue,
-                           finance_entries_recent=finance_entries_recent,
-                           finance_slots=finance_slots,
-                           feedback_posts=feedback_posts,
-                           superadmin_logged_in_users=superadmin_logged_in_users,
-                           superadmin_total_users=superadmin_total_users,
-                           superadmin_live_website_users=superadmin_live_website_users,
-                           superadmin_live_website_count=superadmin_live_website_count,
-                           superadmin_email=SUPERADMIN_EMAIL)
+    # The classic Jinja admin panel has been retired. Every feature now lives
+    # in the React studio (/admin/studio). This endpoint name is kept so the
+    # many url_for('admin_panel', ...) redirects in the legacy POST routes still
+    # resolve; it now simply forwards to the studio.
+    return redirect(url_for("admin_studio"))
 
 
 @app.route('/admin/sessions/revoke/<int:session_id>', methods=['POST'])

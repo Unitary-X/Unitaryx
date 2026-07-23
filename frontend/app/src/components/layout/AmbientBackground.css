@@ -1,0 +1,34 @@
+.ambient-background {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ambient-orb {
+  position: absolute;
+  top: var(--orb-top);
+  left: var(--orb-left);
+  width: var(--orb-size);
+  height: var(--orb-size);
+  background: var(--orb-color);
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.45;
+  animation: orb-drift var(--orb-duration) ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.ambient-orb--static {
+  animation: none;
+}
+
+@keyframes orb-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(4%, 6%, 0) scale(1.08);
+  }
+}

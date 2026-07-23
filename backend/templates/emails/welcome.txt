@@ -4,6 +4,6 @@
 
 {{ body }}
 
-{% if app_url %}Open the app: {{ app_url }}{% endif %}
+{% if app_url %}{{ cta }}: {{ app_url }}{% endif %}
 
 — The Unitary X Team
