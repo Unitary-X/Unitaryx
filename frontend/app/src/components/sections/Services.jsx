@@ -1,4 +1,4 @@
-import { motion } from 'framer-motion';
+import { motion, useTransform } from 'framer-motion';
 import ScrollPanel from '../layout/ScrollPanel';
 import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 import './Services.css';
@@ -27,48 +27,56 @@ const SERVICES = [
   },
 ];
 
-const cardVariants = {
-  hidden: (custom) => ({
-    opacity: 0,
-    x: custom.x,
-    y: custom.y,
-    rotate: custom.rotate,
-  }),
-  visible: {
-    opacity: 1,
-    x: 0,
-    y: 0,
-    rotate: 0,
-    transition: { type: 'spring', stiffness: 120, damping: 16 },
-  },
-};
-
 export default function Services() {
   const reduceMotion = usePrefersReducedMotion();
 
   return (
     <ScrollPanel index={2} id="services">
-      <div className="panel-inner services-inner">
-        <span className="eyebrow">What we do</span>
-        <h2 className="gradient-headline services-title">Three disciplines, one delivery.</h2>
-        <div className="services-stack">
-          {SERVICES.map((service, i) => (
-            <motion.div
-              key={service.title}
-              className="services-card glass"
-              style={{ '--stack-offset': i }}
-              custom={service}
-              initial={reduceMotion ? false : 'hidden'}
-              whileInView="visible"
-              viewport={{ once: true, amount: 0.5 }}
-              variants={cardVariants}
-            >
-              <h3>{service.title}</h3>
-              <p>{service.description}</p>
-            </motion.div>
-          ))}
+      {(scrollYProgress) => (
+        <div className="panel-inner services-inner">
+          <span className="eyebrow">What we do</span>
+          <h2 className="gradient-headline services-title">Three disciplines, one delivery.</h2>
+          <div className="services-stack">
+            {SERVICES.map((service, i) => (
+              <ServiceCard
+                key={service.title}
+                service={service}
+                index={i}
+                scrollYProgress={scrollYProgress}
+                reduceMotion={reduceMotion}
+              />
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </ScrollPanel>
+  );
+}
+
+function ServiceCard({ service, index, scrollYProgress, reduceMotion }) {
+  // The signature moment (CLAUDE.md §6): three scattered cards fly together
+  // into an overlapping stack. Scroll-scrubbed across the panel's first half
+  // so the assembly literally completes as you scroll, not on first view —
+  // each card starts assembling at a slightly staggered progress point.
+  const start = 0.05 + index * 0.08;
+  const end = start + 0.35;
+  const range = [start, end];
+
+  const x = useTransform(scrollYProgress, range, [service.x, 0]);
+  const y = useTransform(scrollYProgress, range, [service.y, 0]);
+  const rotate = useTransform(scrollYProgress, range, [service.rotate, 0]);
+  const opacity = useTransform(scrollYProgress, [start, start + 0.15], [0, 1]);
+
+  return (
+    <motion.div
+      className="services-card glass"
+      style={{
+        '--stack-offset': index,
+        ...(reduceMotion ? {} : { x, y, rotate, opacity }),
+      }}
+    >
+      <h3>{service.title}</h3>
+      <p>{service.description}</p>
+    </motion.div>
   );
 }

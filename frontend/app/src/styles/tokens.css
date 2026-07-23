@@ -17,8 +17,8 @@
   --font-body: 'Plus Jakarta Sans', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
-  --panel-height-desktop: 165vh;
-  --panel-height-mobile: 150vh;
+  --panel-height-desktop: 130vh;
+  --panel-height-mobile: 120vh;
 }
 
 /* background-clip/background don't inherit to children, and KineticText

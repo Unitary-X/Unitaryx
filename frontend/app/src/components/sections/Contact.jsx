@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react';
-import ScrollPanel from '../layout/ScrollPanel';
 import MagneticButton from '../common/MagneticButton';
 import { apiFetch, getJSON } from '../../lib/api';
 import './Contact.css';
 
 const SERVICES = ['web', 'software', 'hardware'];
+
+const CHANNELS = [
+  { label: 'Phone', value: '+91 93637 34565', href: 'tel:+919363734565' },
+  { label: 'Email', value: 'xunitary@gmail.com', href: 'mailto:xunitary@gmail.com' },
+  { label: 'Instagram', value: '@unitaryx__official', href: 'https://instagram.com/unitaryx__official' },
+];
 
 const INITIAL_FORM = { name: '', email: '', phone: '', service: '', deadline: '', message: '' };
 
@@ -37,11 +42,27 @@ export default function Contact() {
   };
 
   return (
-    <ScrollPanel index={5} id="contact">
-      <div className="panel-inner contact-inner">
-        <span className="eyebrow">Start a project</span>
-        <h2 className="gradient-headline contact-title">Tell us what you're building.</h2>
+    <section className="contact-section" id="contact">
+      <div className="section-inner contact-inner">
+        <div className="contact-intro">
+          <span className="eyebrow">Start a project</span>
+          <h2 className="gradient-headline contact-title">Tell us what you're building.</h2>
+          <p className="contact-lead">
+            Share your goal and timeline — the fastest way to begin. We usually reply within a day.
+          </p>
+          <ul className="contact-channels">
+            {CHANNELS.map((c) => (
+              <li key={c.label}>
+                <span className="contact-channel-label">{c.label}</span>
+                <a href={c.href} target={c.href.startsWith('http') ? '_blank' : undefined} rel="noreferrer">
+                  {c.value}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
 
+        <div className="contact-form-col">
         {session.loading ? null : !session.authenticated ? (
           <div className="contact-login-prompt glass">
             <p>Sign in to submit a project request — we'll track it on your dashboard.</p>
@@ -101,7 +122,8 @@ export default function Contact() {
             )}
           </form>
         )}
+        </div>
       </div>
-    </ScrollPanel>
+    </section>
   );
 }

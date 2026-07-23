@@ -7,6 +7,10 @@ _db_fd, _db_path = tempfile.mkstemp(suffix=".db")
 os.close(_db_fd)
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{_db_path}")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
+# The app walks up the tree to load a real .env for local/worktree runs; that
+# would pull real SMTP creds (and other prod values) into the test process and
+# let mail-sending tests hit live SMTP. Tests must use only the env set here.
+os.environ["UNITARYX_SKIP_DOTENV_WALKUP"] = "1"
 
 from backend.app import (  # noqa: E402  (must import after env vars are set)
     app as flask_app,

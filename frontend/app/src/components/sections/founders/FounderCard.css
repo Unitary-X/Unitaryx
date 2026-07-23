@@ -1,7 +1,10 @@
+/* Positioned relative (not absolute) so the card gives its wrapping motion.div
+   real dimensions — that's what lets the wrapper's own translate(-50%,-50%)
+   actually center it on the stage. When it was absolute, the wrapper was
+   zero-size, the centering translate did nothing, and the card's top-left sat
+   at the stage centre (visibly off-centre on desktop, cut off on mobile). */
 .founder-card {
-  position: absolute;
-  top: 50%;
-  left: 50%;
+  position: relative;
   width: 260px;
   height: 340px;
   border-radius: 22px;
@@ -12,6 +15,13 @@
   background-origin: border-box;
   background-clip: padding-box, border-box;
   will-change: transform, filter, opacity;
+}
+
+@media (max-width: 480px) {
+  .founder-card {
+    width: 220px;
+    height: 300px;
+  }
 }
 
 .founder-card img {
@@ -44,6 +54,13 @@
   color: white;
 }
 
+/* The active card carries bio + socials, so its overlay needs a taller, more
+   opaque gradient to keep that extra text legible over any photo. */
+.founder-card.is-active .founder-card-overlay {
+  padding-top: 2.25rem;
+  background: linear-gradient(to top, rgba(16, 21, 43, 0.94) 55%, rgba(16, 21, 43, 0));
+}
+
 .founder-name {
   font-family: var(--font-display);
   font-weight: 700;
@@ -58,4 +75,32 @@
   font-size: 0.72rem;
   color: var(--brass-soft);
   margin-top: 0.2rem;
+}
+
+.founder-bio {
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.founder-socials {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.founder-socials a {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.68rem;
+  color: var(--brass-soft);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.founder-socials a:hover {
+  border-bottom-color: var(--brass-soft);
 }

@@ -8,6 +8,129 @@
   font-size: clamp(2rem, 4vw, 3rem);
 }
 
+.founders-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.founders-scroll-hint {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .founders-scroll-hint {
+    display: none;
+  }
+}
+
+/* Split layout: sticky-feeling info card on the left, photo carousel on the
+   right. On desktop this fills the space that used to sit empty beside the
+   centred carousel. */
+.founders-body {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 2.5rem;
+  align-items: center;
+}
+
+.founders-info {
+  min-height: 260px;
+  display: flex;
+  align-items: center;
+}
+
+.founders-info-inner {
+  border-left: 2px solid var(--brass-soft);
+  padding-left: 1.5rem;
+}
+
+.founders-info-count {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  color: var(--cobalt);
+  letter-spacing: 0.04em;
+}
+
+.founders-info-count span {
+  color: var(--ink-faint);
+}
+
+.founders-info-name {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(1.5rem, 2.4vw, 2rem);
+  line-height: 1.1;
+  color: var(--ink);
+  margin-top: 0.75rem;
+}
+
+.founders-info-role {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.78rem;
+  color: var(--cobalt);
+  margin-top: 0.5rem;
+}
+
+.founders-info-bio {
+  margin-top: 1rem;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.founders-info-socials {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.founders-info-socials a {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  color: var(--brass);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.founders-info-socials a:hover {
+  border-bottom-color: var(--brass);
+}
+
+/* The info card owns the detail text on desktop, so keep the photo cards
+   clean — just name + role. */
+@media (min-width: 981px) {
+  .founder-card .founder-bio,
+  .founder-card .founder-socials {
+    display: none;
+  }
+}
+
+/* Below the split breakpoint the info card is hidden and the card overlay
+   carries bio/socials again (default FounderCard behaviour). */
+@media (max-width: 980px) {
+  .founders-body {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+
+  .founders-info {
+    display: none;
+  }
+}
+
 .founders-carousel {
   display: flex;
   flex-direction: column;

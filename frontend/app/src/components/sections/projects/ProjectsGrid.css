@@ -1,15 +1,46 @@
+/* Projects lives in normal document flow (not a pinned 100vh panel): a grid of
+   ~8 cards can't fit one viewport, so pinning it forced an inner scrollbar and
+   left the panel showing a blank area mid-scroll. As a normal section it grows
+   to its natural height and every card is reachable by the page scroll. */
+.projects-section {
+  position: relative;
+  background: var(--canvas);
+  padding: clamp(4rem, 9vh, 7rem) 0;
+}
+
 .projects-title {
   font-size: clamp(2rem, 4vw, 3rem);
+  margin-bottom: 1rem;
+}
+
+.projects-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   margin-bottom: 1.25rem;
+}
+
+.projects-filter-tab {
+  padding: 0.4rem 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--glass);
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.projects-filter-tab.active {
+  background: linear-gradient(100deg, var(--cobalt), var(--cobalt-deep));
+  color: white;
+  border-color: transparent;
 }
 
 .projects-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 1.25rem;
-  max-height: 60vh;
-  overflow-y: auto;
-  padding-right: 0.25rem;
 }
 
 .project-skeleton {
@@ -21,7 +52,13 @@
   padding: 3rem 0;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
+  .projects-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 620px) {
   .projects-grid {
     grid-template-columns: 1fr;
   }

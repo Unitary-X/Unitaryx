@@ -19,7 +19,7 @@ from google.auth.transport import requests as google_requests
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy import inspect, text
 from werkzeug.middleware.proxy_fix import ProxyFix
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 # Security & Config
 from flask_talisman import Talisman
@@ -35,6 +35,31 @@ BACKUP_DIR = os.path.join(APP_DIR, "instance", "db_backups")
 load_dotenv(os.path.join(APP_DIR, ".env"), override=False)
 # Also support launching from workspace root where SMTP/OAuth vars are often stored.
 load_dotenv(os.path.join(os.path.dirname(APP_DIR), ".env"), override=False)
+# When running from a git worktree (…/.claude/worktrees/<name>/backend) the
+# real .env lives several levels up in the main checkout and isn't copied in
+# (it's gitignored). Walk up the tree and load the first .env found so local
+# worktree runs pick up SMTP/OAuth creds instead of silently failing to send.
+# Skipped under the test suite (conftest sets the flag) so tests never inherit
+# real SMTP creds / prod values and can't hit live mail servers.
+if not os.getenv("UNITARYX_SKIP_DOTENV_WALKUP"):
+    _env_probe = os.path.dirname(APP_DIR)
+    for _ in range(6):
+        _env_probe = os.path.dirname(_env_probe)
+        if not _env_probe:
+            break
+        _candidate = os.path.join(_env_probe, ".env")
+        if os.path.isfile(_candidate):
+            load_dotenv(_candidate, override=False)
+            break
+
+# Canonical public URL, used for absolute links in transactional emails (the
+# welcome/task CTA buttons render only when this is set). Falls back to the
+# production domain so those buttons never silently disappear when APP_URL is
+# left blank in the environment.
+DEFAULT_APP_URL = "https://unitaryx.org"
+
+def resolved_app_url():
+    return (os.getenv("APP_URL") or "").strip() or DEFAULT_APP_URL
 
 app = Flask(
     __name__,
@@ -785,6 +810,23 @@ def api_admin_required(f):
     return decorated
 
 
+def api_superadmin_required(f):
+    """Like api_admin_required, but additionally restricts to the superadmin
+    account (by email or admin_scope == 'superadmin'). Used for Founders/
+    Projects management, which is deliberately kept out of reach of ordinary
+    ops/finance/support admins and, of course, consumer accounts."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({"success": False, "message": "Authentication required."}), 401
+        if session.get('role') != 'admin':
+            return jsonify({"success": False, "message": "Admin access only."}), 403
+        if not is_super_admin(current_user()):
+            return jsonify({"success": False, "message": "Superadmin access only."}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
 def api_login_required(f):
     """Like login_required, but responds with JSON 401 instead of redirecting —
     for fetch-only customer API routes (e.g. the React dashboard)."""
@@ -1430,7 +1472,7 @@ def _send_welcome_email(email, name):
         name=name,
         sender=smtp_from,
         locale=os.getenv("MAIL_LOCALE", "en"),
-        app_url=os.getenv("APP_URL", ""),
+        app_url=resolved_app_url(),
     )
 
 
@@ -1447,7 +1489,7 @@ def _send_task_assigned_email(email, title, details, assigned_by):
         assigned_by=assigned_by,
         sender=smtp_from,
         locale=os.getenv("MAIL_LOCALE", "en"),
-        app_url=os.getenv("APP_URL", ""),
+        app_url=resolved_app_url(),
     )
 
 
@@ -2054,6 +2096,15 @@ def api_auth_session():
             "redirect": url_for("login"),
         })
 
+    is_admin_role = normalize_role(user.role) == "admin"
+    admin_scope = normalize_admin_scope(session.get("admin_scope") or getattr(user, "admin_scope", "ops")) if is_admin_role else ""
+    is_superadmin_flag = bool(session.get("is_superadmin"))
+    capabilities = (
+        sorted(ADMIN_SCOPE_CAPABILITIES["superadmin"]) if is_superadmin_flag
+        else sorted(ADMIN_SCOPE_CAPABILITIES.get(admin_scope, set())) if is_admin_role
+        else []
+    )
+
     return jsonify({
         "authenticated": True,
         "user": {
@@ -2061,8 +2112,9 @@ def api_auth_session():
             "name": user.name,
             "email": normalize_email(user.email),
             "role": normalize_role(user.role),
-            "is_superadmin": bool(session.get("is_superadmin")),
-            "admin_scope": normalize_admin_scope(session.get("admin_scope") or getattr(user, "admin_scope", "ops")) if normalize_role(user.role) == "admin" else "",
+            "is_superadmin": is_superadmin_flag,
+            "admin_scope": admin_scope,
+            "capabilities": capabilities,
             "profile_photo": (session.get("user_profile_photo") or "").strip(),
         },
     })
@@ -2303,6 +2355,52 @@ def submit_public_feedback():
     return redirect(url_for('index', _anchor='feedback-corner'))
 
 
+def _feedback_dict(fb):
+    return {
+        "id": fb.id,
+        "author_name": fb.author_name,
+        "rating": int(fb.rating or 5),
+        "message": fb.message,
+        "created_at": fb.created_at.strftime("%d %b %Y") if fb.created_at else "",
+    }
+
+
+@app.route("/api/feedback")
+def api_feedback_list():
+    posts = PublicFeedback.query.order_by(PublicFeedback.created_at.desc()).limit(12).all()
+    return jsonify({"feedback": [_feedback_dict(p) for p in posts]})
+
+
+@app.route("/api/feedback", methods=["POST"])
+@api_login_required
+@limiter.limit("20 per day", methods=["POST"])
+def api_feedback_create():
+    actor = current_user()
+    data = request_payload()
+    message = str(data.get("message", "")).strip()
+    try:
+        rating = int(data.get("rating", 5))
+    except (TypeError, ValueError):
+        rating = 5
+    rating = max(1, min(5, rating))
+
+    if len(message) < 4:
+        return jsonify({"success": False, "message": "Feedback must be at least 4 characters."}), 400
+    if len(message) > 1500:
+        return jsonify({"success": False, "message": "Feedback must be at most 1500 characters."}), 400
+
+    fb = PublicFeedback(
+        user_id=actor.id,
+        author_email=normalize_email(getattr(actor, "email", "")),
+        author_name=(getattr(actor, "name", "") or "User").strip()[:120],
+        rating=rating,
+        message=message,
+    )
+    db.session.add(fb)
+    db.session.commit()
+    return jsonify({"success": True, "post": _feedback_dict(fb)}), 201
+
+
 @app.route("/api/projects")
 def api_projects():
     category = request.args.get("category", "all")
@@ -2328,14 +2426,14 @@ def api_founders():
 
 
 @app.route("/api/admin/founders", methods=["GET"])
-@api_admin_required
+@api_superadmin_required
 def api_admin_founders_list():
     founders = Founder.query.order_by(Founder.display_order.asc(), Founder.id.asc()).all()
     return jsonify([f.to_dict() for f in founders])
 
 
 @app.route("/api/admin/founders", methods=["POST"])
-@api_admin_required
+@api_superadmin_required
 @limiter.limit("60 per hour", methods=["POST"])
 def api_admin_founders_create():
     data = request_payload()
@@ -2360,7 +2458,7 @@ def api_admin_founders_create():
 
 
 @app.route("/api/admin/founders/<int:founder_id>", methods=["PUT"])
-@api_admin_required
+@api_superadmin_required
 @limiter.limit("120 per hour", methods=["PUT"])
 def api_admin_founders_update(founder_id):
     founder = Founder.query.get(founder_id)
@@ -2395,7 +2493,7 @@ def api_admin_founders_update(founder_id):
 
 
 @app.route("/api/admin/founders/<int:founder_id>", methods=["DELETE"])
-@api_admin_required
+@api_superadmin_required
 @limiter.limit("60 per hour", methods=["DELETE"])
 def api_admin_founders_delete(founder_id):
     founder = Founder.query.get(founder_id)
@@ -2407,7 +2505,7 @@ def api_admin_founders_delete(founder_id):
 
 
 @app.route("/api/admin/founders/reorder", methods=["POST"])
-@api_admin_required
+@api_superadmin_required
 @limiter.limit("60 per hour", methods=["POST"])
 def api_admin_founders_reorder():
     data = request_payload()
@@ -2433,7 +2531,7 @@ def api_admin_founders_reorder():
 # ─── API — Admin Projects CRUD ──────────────────────────────────────────────────
 
 @app.route("/api/admin/projects", methods=["POST"])
-@api_admin_required
+@api_superadmin_required
 @limiter.limit("60 per hour", methods=["POST"])
 def api_admin_projects_create():
     data = request_payload()
@@ -2468,7 +2566,7 @@ def api_admin_projects_create():
 
 
 @app.route("/api/admin/projects/<int:project_id>", methods=["PUT"])
-@api_admin_required
+@api_superadmin_required
 @limiter.limit("120 per hour", methods=["PUT"])
 def api_admin_projects_update(project_id):
     project = Project.query.get(project_id)
@@ -2518,7 +2616,7 @@ def api_admin_projects_update(project_id):
 
 
 @app.route("/api/admin/projects/<int:project_id>", methods=["DELETE"])
-@api_admin_required
+@api_superadmin_required
 @limiter.limit("60 per hour", methods=["DELETE"])
 def api_admin_projects_delete(project_id):
     project = Project.query.get(project_id)
@@ -2530,7 +2628,7 @@ def api_admin_projects_delete(project_id):
 
 
 @app.route("/api/admin/projects/reorder", methods=["POST"])
-@api_admin_required
+@api_superadmin_required
 @limiter.limit("60 per hour", methods=["POST"])
 def api_admin_projects_reorder():
     data = request_payload()
@@ -2561,7 +2659,7 @@ UPLOAD_MAX_DIMENSIONS = {"founders": 1600, "projects": 1200}
 
 
 @app.route("/api/admin/upload", methods=["POST"])
-@api_admin_required
+@api_superadmin_required
 @limiter.limit("30 per hour", methods=["POST"])
 def api_admin_upload():
     kind = (request.form.get("kind") or "").strip().lower()
@@ -2588,6 +2686,11 @@ def api_admin_upload():
         image.load()
     except (UnidentifiedImageError, OSError):
         return jsonify({"success": False, "message": "File is not a valid image."}), 400
+
+    # Phone cameras store orientation in EXIF and keep the pixels un-rotated.
+    # We re-encode to JPEG and drop EXIF, so bake the rotation into the pixels
+    # first — otherwise portrait photos display sideways.
+    image = ImageOps.exif_transpose(image)
 
     if image.mode not in ("RGB", "L"):
         image = image.convert("RGB")
@@ -3619,9 +3722,12 @@ def _admin_user_dict(u):
 @app.route("/api/admin/admins")
 @api_admin_required
 def api_admin_admins():
+    if not is_super_admin():
+        return jsonify({"can_manage": False, "scopes": [], "admins": []})
+
     admins = User.query.filter(db.func.lower(User.role) == "admin").order_by(User.created_at.asc()).all()
     return jsonify({
-        "can_manage": is_super_admin(),
+        "can_manage": True,
         "scopes": ["ops", "finance", "support", "superadmin"],
         "admins": [_admin_user_dict(u) for u in admins],
     })

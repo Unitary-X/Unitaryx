@@ -46,6 +46,7 @@ function FounderRow({ founder, onEdit, onDelete, onReorderEnd }) {
 export default function FoundersManager() {
   const [founders, setFounders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [denied, setDenied] = useState(false);
   const [editing, setEditing] = useState(null); // founder object, 'new', or null
   const foundersRef = useRef(founders);
   const { status: orderStatus, run: runOrder } = useSaveStatus();
@@ -55,8 +56,14 @@ export default function FoundersManager() {
   const load = () => {
     setLoading(true);
     getJSON('/api/admin/founders')
-      .then(setFounders)
-      .catch(() => setFounders([]))
+      .then((data) => {
+        setDenied(false);
+        setFounders(data);
+      })
+      .catch((err) => {
+        if (err.status === 403) setDenied(true);
+        setFounders([]);
+      })
       .finally(() => setLoading(false));
   };
 
@@ -83,6 +90,22 @@ export default function FoundersManager() {
     await deleteReq(`/api/admin/founders/${founder.id}`);
     setFounders((list) => list.filter((f) => f.id !== founder.id));
   };
+
+  if (!loading && denied) {
+    return (
+      <section className="admin-section">
+        <div className="admin-section-head">
+          <h2>Team members</h2>
+        </div>
+        <div className="admin-empty glass">
+          <p className="admin-empty-title">Superadmin only</p>
+          <p className="admin-muted">
+            Managing the team roster is restricted to the superadmin account.
+          </p>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="admin-section">

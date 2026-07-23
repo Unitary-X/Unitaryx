@@ -102,12 +102,19 @@ def build_assigned_payload(
 def _deliver(subject: str, sender: str, recipient: str, plain: str, html: str | None = None) -> None:
     from .email_tasks import send_email
 
-    # send_email is a Celery task when broker is configured; otherwise a sync function.
+    # send_email is a Celery task when a broker is configured; otherwise a plain
+    # sync function. Prefer async delivery, but if enqueuing fails (broker/Redis
+    # unreachable — common in local dev, and possible in prod if the worker is
+    # down) fall back to sending synchronously in-process. Calling the Celery
+    # task object directly runs its body now, so mail still goes out either way.
     enqueue = getattr(send_email, "delay", None)
     if callable(enqueue):
-        enqueue(subject, sender, recipient, plain, html)
-    else:
-        send_email(subject, sender, recipient, plain, html)
+        try:
+            enqueue(subject, sender, recipient, plain, html)
+            return
+        except Exception:
+            pass
+    send_email(subject, sender, recipient, plain, html)
 
 
 def send_welcome_email(recipient: str, name: str, sender: str, locale: str | None = None, app_url: str | None = None) -> None:
