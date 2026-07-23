@@ -33,3 +33,7 @@ frontend/app/dist/
 
 # Uploaded founder/project photos (local disk storage, not source-controlled)
 frontend/static/uploads/
+
+# Local docker volumes
+data/
+
