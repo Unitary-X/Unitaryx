@@ -5459,7 +5459,18 @@ def toggle_user(uid):
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
+def _ensure_upload_dirs():
+    base_uploads = os.path.join(PROJECT_ROOT, "frontend", "static", "uploads")
+    for sub in ("founders", "projects", "testimonials"):
+        target = os.path.join(base_uploads, sub)
+        try:
+            os.makedirs(target, exist_ok=True)
+        except Exception as e:
+            app.logger.warning("Could not pre-create upload directory %s: %s", target, e)
+
+
 def initialize_database():
+    _ensure_upload_dirs()
     with app.app_context():
         try:
             db.create_all()
