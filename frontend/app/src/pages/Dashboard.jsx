@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useDashboard } from '../hooks/useDashboard';
+import { usePageMeta } from '../hooks/usePageMeta';
 import DashboardHeader from '../components/dashboard/DashboardHeader';
 import KpiRow from '../components/dashboard/KpiRow';
 import StatusPills from '../components/dashboard/StatusPills';
@@ -21,9 +22,7 @@ export default function Dashboard() {
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [activeRequest, setActiveRequest] = useState(null);
 
-  useEffect(() => {
-    document.title = 'Dashboard — Unitary X';
-  }, []);
+  usePageMeta('Dashboard — Unitary X', { noindex: true });
 
   const counts = useMemo(() => {
     const c = { total: requests.length, New: 0, 'In Progress': 0, Done: 0, updates: 0 };

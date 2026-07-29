@@ -1696,21 +1696,51 @@ def _ensure_schema_columns():
 # that produces this in the deployed image.
 DIST_DIR = os.path.join(PROJECT_ROOT, "frontend", "app", "dist")
 
+# The only paths the React Router <Routes> in App.jsx actually renders.
+# Anything else must 404 rather than silently serve the homepage — a bare
+# catch-all that returns 200 for every path is a classic SPA "soft 404" that
+# creates unbounded duplicate-content URLs (all identical to "/") and tanks
+# indexing (this is what produced the Search Console duplicate-canonical and
+# crawled-not-indexed flags: /about, /services, /projects, /contact, /home,
+# /index.html etc. were all serving 200 copies of the homepage).
+KNOWN_SPA_ROUTES = {"", "dashboard", "admin/studio"}
+
+
+@app.before_request
+def redirect_www_to_apex():
+    """unitaryx.org and www.unitaryx.org were both serving identical content
+    with no redirect between them — Search Console flagged this as a
+    duplicate with a canonical Google chose itself rather than the one our
+    <link rel="canonical"> specifies. Every canonical/OG/sitemap URL in this
+    project assumes the bare apex domain, so www must always redirect there."""
+    host = (request.host or "").lower()
+    if host.startswith("www."):
+        parts = urllib.parse.urlsplit(request.url)
+        new_url = urllib.parse.urlunsplit((parts.scheme, host[4:], parts.path, parts.query, parts.fragment))
+        return redirect(new_url, code=301)
+
 
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def index(path):
-    """Serves the built React SPA for every non-API, non-static route,
-    including static files copied from frontend/app/public/ (robots.txt,
-    sitemap.xml, favicons, og-image.jpg) at the paths Vite places them.
-    Kept as endpoint 'index' since other routes still redirect via
+    """Serves the built React SPA for known client-side routes and static
+    files copied from frontend/app/public/ (robots.txt, sitemap.xml,
+    favicons, og-image.jpg) at the paths Vite places them. Any other path
+    gets a real 404 instead of a soft-404 copy of the homepage. Kept as
+    endpoint 'index' since other routes still redirect via
     url_for('index', _anchor=...)."""
     if path.startswith(("api/", "static/")):
         abort(404)
+    if path == "index.html" or path.endswith("/index.html"):
+        # /index.html is a byte-identical duplicate of "/" — redirect rather
+        # than serve it twice under two URLs.
+        return redirect("/" + path[: -len("index.html")], code=301)
     candidate = safe_join(DIST_DIR, path) if path else None
     if candidate and os.path.isfile(candidate):
         return send_from_directory(DIST_DIR, path)
-    return send_from_directory(DIST_DIR, "index.html")
+    if path.rstrip("/") in KNOWN_SPA_ROUTES:
+        return send_from_directory(DIST_DIR, "index.html")
+    return send_from_directory(DIST_DIR, "index.html"), 404
 
 
 # ─── Auth Routes ──────────────────────────────────────────────────────────────

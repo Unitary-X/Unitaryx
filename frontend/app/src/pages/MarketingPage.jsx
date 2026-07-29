@@ -1,3 +1,4 @@
+import { usePageMeta } from '../hooks/usePageMeta';
 import NavBar from '../components/layout/NavBar';
 import ScrollRail from '../components/layout/ScrollRail';
 import Footer from '../components/layout/Footer';
@@ -12,26 +13,30 @@ import Feedback from '../components/sections/Feedback';
 import Contact from '../components/sections/Contact';
 
 export default function MarketingPage() {
+  usePageMeta();
+
   return (
     <>
       <NavBar />
       <ScrollRail />
-      {/* Signature pin-and-cover stacked panels */}
-      <div className="pinned-stack">
-        <Hero />
-        <Services />
-        <FoundersCarousel />
-      </div>
-      {/* Normal-flow content that scrolls over the pinned stack. Projects leads
-          here (not a pinned panel) because a grid of ~8 cards can't fit one
-          pinned viewport without an inner scrollbar / blank mid-scroll gap. */}
-      <main className="marketing-flow">
-        <ProjectsGrid />
-        <About />
-        <Process />
-        <Faq />
-        <Feedback />
-        <Contact />
+      <main>
+        {/* Signature pin-and-cover stacked panels */}
+        <div className="pinned-stack">
+          <Hero />
+          <Services />
+          <FoundersCarousel />
+        </div>
+        {/* Normal-flow content that scrolls over the pinned stack. Projects leads
+            here (not a pinned panel) because a grid of ~8 cards can't fit one
+            pinned viewport without an inner scrollbar / blank mid-scroll gap. */}
+        <div className="marketing-flow">
+          <ProjectsGrid />
+          <About />
+          <Process />
+          <Faq />
+          <Feedback />
+          <Contact />
+        </div>
       </main>
       <Footer />
     </>

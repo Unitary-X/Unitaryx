@@ -41,7 +41,12 @@ export default function ProjectCard({ project }) {
         <motion.span className="project-card-sweep" style={{ left: sweepX }} aria-hidden="true" />
       )}
       {project.photo_url && (
-        <img className="project-card-photo" src={project.photo_url} alt={project.title} loading="lazy" />
+        <img
+          className="project-card-photo"
+          src={project.photo_url}
+          alt={`${project.title} — ${project.category} project by Unitary X`}
+          loading="lazy"
+        />
       )}
       <div className="project-card-body">
         {project.featured && <span className="project-card-badge">Featured</span>}

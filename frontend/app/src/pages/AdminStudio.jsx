@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getJSON, postJSON } from '../lib/api';
+import { usePageMeta } from '../hooks/usePageMeta';
 import FoundersManager from '../components/admin/FoundersManager';
 import ProjectsManager from '../components/admin/ProjectsManager';
 import AnalyticsPanel from '../components/admin/AnalyticsPanel';
@@ -77,9 +78,7 @@ export default function AdminStudio() {
   const [session, setSession] = useState({ loading: true, user: null });
   const [tab, setTab] = useState(null);
 
-  useEffect(() => {
-    document.title = 'Studio — Unitary X Admin';
-  }, []);
+  usePageMeta('Studio — Unitary X Admin', { noindex: true });
 
   useEffect(() => {
     getJSON('/api/auth/session')
