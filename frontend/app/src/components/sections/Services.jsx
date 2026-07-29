@@ -38,7 +38,7 @@ export default function Services() {
   const reduceMotion = usePrefersReducedMotion();
 
   return (
-    <ScrollPanel index={2} id="services">
+    <ScrollPanel index={2} id="services" className="services-panel" wrapperClassName="services-panel-wrapper">
       {(scrollYProgress) => (
         <div className="panel-inner services-inner">
           <span className="eyebrow">What we do</span>

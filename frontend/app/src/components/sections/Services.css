@@ -88,6 +88,49 @@
   }
 
   .services-card {
+    /* Desktop's `flex: 1 1 0` uses flex-basis:0 to split three equal-width
+       columns — in the mobile column stack that same basis collapses each
+       card's height toward 0 instead of sizing to content. Switch to
+       content-based sizing here. */
+    flex: 0 0 auto;
     margin-left: 0 !important;
+    padding: 1.5rem;
+    min-height: 0;
+    gap: 0.5rem;
+  }
+
+  .services-card-icon {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+
+  .services-card h3 {
+    font-size: 1.25rem;
+  }
+
+  .services-card p {
+    font-size: 0.9rem;
+    line-height: 1.45;
+  }
+
+  /* Three stacked full-width cards don't fit inside a pinned 100vh panel on
+     mobile (~960px of content vs. ~700-812px of viewport) and the panel's
+     overflow:hidden clips the last card. Degrade to normal document flow
+     here, same pattern ScrollPanel.css uses for prefers-reduced-motion. */
+  .scroll-panel-wrapper.services-panel-wrapper {
+    height: auto;
+  }
+
+  .scroll-panel.services-panel {
+    position: static;
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+    padding: 4rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .scroll-panel.services-panel::before {
+    display: none;
   }
 }
