@@ -39,6 +39,12 @@
   transform: translateY(-6px);
 }
 
+.services-card-icon {
+  width: 2.25rem;
+  height: 2.25rem;
+  color: var(--cobalt);
+}
+
 .services-card h3 {
   font-size: 1.5rem;
 }
@@ -46,6 +52,34 @@
 .services-card p {
   font-size: 1rem;
   line-height: 1.55;
+}
+
+.services-card-points {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.services-card-points li {
+  padding-left: 1.1rem;
+  position: relative;
+}
+
+.services-card-points li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.5em;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: linear-gradient(100deg, var(--cobalt), var(--brass));
 }
 
 @media (max-width: 900px) {

@@ -4,6 +4,33 @@
   gap: 1.25rem;
 }
 
+.hero-disciplines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.hero-discipline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  background: var(--glass);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--cobalt-deep);
+}
+
+.hero-discipline svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--cobalt);
+}
+
 .hero-title {
   font-size: clamp(2.5rem, 6vw, 4.5rem);
   font-weight: 800;
@@ -29,4 +56,33 @@
   color: var(--ink);
   text-decoration: none;
   border-bottom: 1px solid var(--line);
+}
+
+.hero-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 1rem 0 0;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+
+.hero-highlights li {
+  padding-left: 1.1rem;
+  position: relative;
+}
+
+.hero-highlights li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.45em;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: var(--brass);
 }

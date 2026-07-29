@@ -155,7 +155,41 @@
 
 .founders-empty {
   text-align: center;
-  padding: 3rem 0;
+  padding: 3rem 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  max-width: 26rem;
+  margin: 0 auto;
+}
+
+.founders-empty p {
+  color: var(--ink-soft);
+}
+
+.founders-empty-slots {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.founders-empty-slots span {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  border: 1.5px dashed var(--ink-faint);
+  opacity: 0.6;
+}
+
+.founders-empty-cta {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--cobalt);
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+  padding-bottom: 0.1rem;
 }
 
 .founders-controls {

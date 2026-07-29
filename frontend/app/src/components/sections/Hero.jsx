@@ -1,9 +1,22 @@
 import { motion, useTransform } from 'framer-motion';
 import KineticText from '../common/KineticText';
 import MagneticButton from '../common/MagneticButton';
+import DisciplineIcon from '../common/DisciplineIcon';
 import ScrollPanel from '../layout/ScrollPanel';
 import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 import './Hero.css';
+
+const DISCIPLINES = [
+  { icon: 'web', label: 'Web' },
+  { icon: 'software', label: 'Software' },
+  { icon: 'hardware', label: 'Embedded Hardware' },
+];
+
+const HIGHLIGHTS = [
+  '10–15 day typical turnaround',
+  '100% source code handed over',
+  '7 days of post-delivery support',
+];
 
 export default function Hero() {
   const reduceMotion = usePrefersReducedMotion();
@@ -30,7 +43,14 @@ function HeroContent({ scrollYProgress, reduceMotion }) {
       className="panel-inner hero-inner"
       style={reduceMotion ? undefined : { scale, opacity, y }}
     >
-      <span className="eyebrow">Web · Software · Embedded Hardware</span>
+      <div className="hero-disciplines" role="list" aria-label="What we build">
+        {DISCIPLINES.map((d) => (
+          <span className="hero-discipline" role="listitem" key={d.icon}>
+            <DisciplineIcon type={d.icon} />
+            {d.label}
+          </span>
+        ))}
+      </div>
       <KineticText
         as="h1"
         className="gradient-headline hero-title"
@@ -48,6 +68,11 @@ function HeroContent({ scrollYProgress, reduceMotion }) {
           See our work →
         </a>
       </div>
+      <ul className="hero-highlights">
+        {HIGHLIGHTS.map((h) => (
+          <li key={h}>{h}</li>
+        ))}
+      </ul>
     </motion.div>
   );
 }

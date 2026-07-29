@@ -1,26 +1,33 @@
 import { motion, useTransform } from 'framer-motion';
 import ScrollPanel from '../layout/ScrollPanel';
+import DisciplineIcon from '../common/DisciplineIcon';
 import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 import './Services.css';
 
 const SERVICES = [
   {
     title: 'Web',
+    icon: 'web',
     description: 'Marketing sites, dashboards, and full-stack products built for speed and clarity.',
+    points: ['Marketing sites', 'Dashboards', 'Full-stack products'],
     rotate: -8,
     x: -60,
     y: -20,
   },
   {
     title: 'Software',
+    icon: 'software',
     description: 'Backend systems, APIs, and internal tools engineered to hold up under real load.',
+    points: ['Backend systems', 'APIs', 'Internal tools'],
     rotate: 4,
     x: 40,
     y: 30,
   },
   {
     title: 'Hardware',
+    icon: 'hardware',
     description: 'Embedded firmware and connected devices, from prototype board to production run.',
+    points: ['Embedded firmware', 'Connected devices', 'Prototype to production'],
     rotate: -3,
     x: -20,
     y: 50,
@@ -75,8 +82,14 @@ function ServiceCard({ service, index, scrollYProgress, reduceMotion }) {
         ...(reduceMotion ? {} : { x, y, rotate, opacity }),
       }}
     >
+      <DisciplineIcon type={service.icon} className="services-card-icon" />
       <h3>{service.title}</h3>
       <p>{service.description}</p>
+      <ul className="services-card-points">
+        {service.points.map((point) => (
+          <li key={point}>{point}</li>
+        ))}
+      </ul>
     </motion.div>
   );
 }

@@ -104,7 +104,13 @@ export default function Feedback() {
 
           <div className="feedback-list">
             {posts.length === 0 ? (
-              <p className="feedback-empty">Be the first to leave feedback.</p>
+              <div className="feedback-empty glass">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                  <path d="M7 8.5c-1.7 0-3 1.3-3 3v1.3c0 1.5 1.1 2.7 2.5 2.9L6 19l3.4-3.3c.9-.2 1.6-1 1.6-2v-2c0-1.7-1.3-3-3-3H7Z" />
+                  <path d="M16 8.5c-1.7 0-3 1.3-3 3v1.3c0 1.5 1.1 2.7 2.5 2.9L15 19l3.4-3.3c.9-.2 1.6-1 1.6-2v-2c0-1.7-1.3-3-3-3h-1Z" />
+                </svg>
+                <p>Be the first to leave feedback.</p>
+              </div>
             ) : (
               posts.map((p, i) => (
                 <motion.article

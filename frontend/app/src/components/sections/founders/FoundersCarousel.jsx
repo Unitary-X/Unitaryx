@@ -121,7 +121,17 @@ function FoundersContent({ founders, loading, reduceMotion, scrollYProgress, dri
       <div className="panel-inner founders-panel-inner">
         <span className="eyebrow">The team</span>
         <KineticText as="h2" className="gradient-headline founders-title" text="Meet the builders of Unitary X" />
-        <p className="founders-empty">Team profiles are coming soon.</p>
+        <div className="founders-empty glass">
+          <div className="founders-empty-slots" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <p>Team profiles are coming soon.</p>
+          <a className="founders-empty-cta" href="#contact">
+            Get in touch →
+          </a>
+        </div>
       </div>
     );
   }
