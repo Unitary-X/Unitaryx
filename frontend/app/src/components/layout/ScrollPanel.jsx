@@ -10,7 +10,15 @@ import './ScrollPanel.css';
  * one-time viewport-triggered fade. `heightVh`/`mobileHeightVh` override the
  * default runway for panels that need more scroll room (e.g. Founders).
  */
-export default function ScrollPanel({ index, id, className = '', heightVh, mobileHeightVh, children }) {
+export default function ScrollPanel({
+  index,
+  id,
+  className = '',
+  wrapperClassName = '',
+  heightVh,
+  mobileHeightVh,
+  children,
+}) {
   const wrapperRef = useRef(null);
   const { scrollYProgress } = useScroll({ target: wrapperRef, offset: ['start start', 'end end'] });
 
@@ -19,7 +27,7 @@ export default function ScrollPanel({ index, id, className = '', heightVh, mobil
   if (mobileHeightVh) wrapperStyle['--panel-height-mobile'] = `${mobileHeightVh}vh`;
 
   return (
-    <section ref={wrapperRef} className="scroll-panel-wrapper" style={wrapperStyle}>
+    <section ref={wrapperRef} className={`scroll-panel-wrapper ${wrapperClassName}`} style={wrapperStyle}>
       <motion.div
         id={id}
         className={`scroll-panel glass-panel ${className}`}
