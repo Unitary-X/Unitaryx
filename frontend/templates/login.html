@@ -4,11 +4,11 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Unitary X | Secure Portal</title>
+    <title>Unitary X | Sign in</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-        href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap"
         rel="stylesheet" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
     {% if google_signin_enabled %}
@@ -19,66 +19,17 @@
 </head>
 
 <body class="lux-auth-body">
-    <!-- ═══ HYPERCHARGED BACKGROUND SYSTEM ═══ -->
     <div class="lux-pro-bg" aria-hidden="true"></div>
-
-    <div class="lux-atmosphere" aria-hidden="true">
-        <div class="atm-orb atm-orb-a"></div>
-        <div class="atm-orb atm-orb-b"></div>
-        <div class="atm-orb atm-orb-c"></div>
-        <div class="atm-beam atm-beam-a"></div>
-        <div class="atm-beam atm-beam-b"></div>
-        <div class="atm-grid"></div>
-    </div>
-
-    <!-- ═══ NEW: METEOR SHOWER LAYER ═══ -->
-    <div class="meteor-field" aria-hidden="true">
-        <span class="meteor m1"></span><span class="meteor m2"></span>
-        <span class="meteor m3"></span><span class="meteor m4"></span>
-        <span class="meteor m5"></span><span class="meteor m6"></span>
-        <span class="meteor m7"></span><span class="meteor m8"></span>
-        <span class="meteor m9"></span><span class="meteor m10"></span>
-    </div>
-
-    <!-- ═══ NEW: FLOATING GEOMETRIC SHAPES ═══ -->
-    <div class="geo-field" aria-hidden="true">
-        <div class="geo-shape geo-hex g1"></div>
-        <div class="geo-shape geo-ring g2"></div>
-        <div class="geo-shape geo-tri g3"></div>
-        <div class="geo-shape geo-sq g4"></div>
-        <div class="geo-shape geo-ring g5"></div>
-        <div class="geo-shape geo-hex g6"></div>
-        <div class="geo-shape geo-tri g7"></div>
-        <div class="geo-shape geo-sq g8"></div>
-    </div>
-
-    <!-- ═══ NEW: ENERGY PULSE RINGS ═══ -->
-    <div class="energy-field" aria-hidden="true">
-        <div class="energy-ring er1"></div>
-        <div class="energy-ring er2"></div>
-        <div class="energy-ring er3"></div>
-    </div>
-
-    <!-- ═══ NEW: AURORA SCANLINES ═══ -->
-    <div class="aurora-field" aria-hidden="true">
-        <div class="aurora-line al1"></div>
-        <div class="aurora-line al2"></div>
-        <div class="aurora-line al3"></div>
-    </div>
 
     <a href="/" class="back-site-btn" aria-label="Back to main site" title="Back to main site">
         <i class="fas fa-arrow-left"></i>
         <span>Back To Site</span>
     </a>
-    <canvas id="lux-canvas" aria-hidden="true"></canvas>
-    <div class="lux-overlay"></div>
-    <div class="lux-grain"></div>
-    <div class="lux-intro" id="lux-intro" aria-hidden="true"></div>
 
     <main class="auth-scene">
         <aside class="scene-panel">
             <p class="scene-tag">UNITARY X FREELANCER SERVICE</p>
-            <h1 class="typing-title" data-typing-text="Professional. Secure.">Professional. Secure.</h1>
+            <h1 class="auth-headline">Professional. Secure.</h1>
             <p class="scene-copy">Professional freelancer services focused on Web Development, Hardware Projects, and
                 Software Development for students and startups.</p>
             <div class="scene-stats">
@@ -93,7 +44,7 @@
 
             <header class="auth-header">
                 <div class="brand">
-                    <h2 class="brand-title">Unitary X</h2>
+                    <h2 class="brand-title">UNITARY <span>X</span></h2>
                 </div>
             </header>
 
@@ -231,7 +182,7 @@
                 </form>
             </section>
 
-            <footer class="auth-foot">Protected by dynamic behavioral authentication.</footer>
+            <footer class="auth-foot">Your session is encrypted and access-controlled.</footer>
         </section>
     </main>
 
@@ -321,7 +272,6 @@
         </div>
     </div>
 
-    <script src="{{ url_for('static', filename='login_pro.js') }}?v={{ range(1000, 9999) | random }}"></script>
     <script src="{{ url_for('static', filename='traffic_tracker.js') }}"></script>
     <script>
         let forgotResetController = null;
@@ -802,34 +752,6 @@
         }
 
         document.addEventListener("DOMContentLoaded", function () {
-            const typingTitle = document.querySelector(".typing-title");
-            if (typingTitle) {
-                const fullText = (typingTitle.getAttribute("data-typing-text") || typingTitle.textContent || "").trim();
-                const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-                if (!reduceMotion && fullText) {
-                    typingTitle.textContent = "";
-                    typingTitle.classList.add("is-typing");
-                    let i = 0;
-
-                    const typeNext = function () {
-                        if (i < fullText.length) {
-                            typingTitle.textContent += fullText.charAt(i);
-                            i += 1;
-                            setTimeout(typeNext, 72);
-                            return;
-                        }
-                        typingTitle.classList.remove("is-typing");
-                        typingTitle.classList.add("typed");
-                    };
-
-                    setTimeout(typeNext, 180);
-                } else {
-                    typingTitle.textContent = fullText;
-                    typingTitle.classList.add("typed");
-                }
-            }
-
             bindAjaxForm("user-form", "fas fa-right-to-bracket", "Sign In");
 
             const forgotLink = document.getElementById("forgot-link") || document.querySelector(".link-muted");
